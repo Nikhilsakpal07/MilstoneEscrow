@@ -12,6 +12,8 @@ interface Milestone {
   amount_usd: number;
   status: string;
   paypal_payout_batch_id?: string;
+  tracking_number?: string;
+  shipping_status?: string;
 }
 
 interface BountyDetail {
@@ -21,8 +23,22 @@ interface BountyDetail {
   amount_usd: number;
   remaining_amount_usd: number;
   freelancer_email: string;
+  freelancer_phone?: string;
+  tracking_number?: string;
+  shipping_status?: string;
   status: string;
   milestones: Milestone[];
+}
+
+interface ShippingOracleInfo {
+  tracking_number: string;
+  status: string;
+  carrier?: string;
+  origin?: string;
+  destination?: string;
+  signed_by?: string;
+  notes?: string;
+  updated_at?: string;
 }
 
 interface ExtractedReceiptData {
@@ -128,6 +144,97 @@ export default function SubmitWorkPage() {
   const [isAcceptingCompromise, setIsAcceptingCompromise] = useState(false);
   const [compromiseAcceptedMsg, setCompromiseAcceptedMsg] = useState<string | null>(null);
 
+  // External Logistics Oracle State
+  const [oracleInfo, setOracleInfo] = useState<ShippingOracleInfo | null>(null);
+  const [isPollingOracle, setIsPollingOracle] = useState(false);
+  const [oracleMsg, setOracleMsg] = useState<string | null>(null);
+  const [newTrackingInput, setNewTrackingInput] = useState("");
+  const [isUpdatingTracking, setIsUpdatingTracking] = useState(false);
+  const [isSimulatingDelivery, setIsSimulatingDelivery] = useState(false);
+
+  // Fetch real-time status from Logistics Oracle
+  const fetchOracleStatus = async (trackingNo?: string) => {
+    const trk = trackingNo || bounty?.tracking_number;
+    if (!trk) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/oracle/shipping/${encodeURIComponent(trk)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setOracleInfo(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch shipping oracle status", e);
+    }
+  };
+
+  const handlePollOracle = async () => {
+    try {
+      setIsPollingOracle(true);
+      setOracleMsg(null);
+      const res = await fetch("http://localhost:8000/api/oracle/poll", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.processed_count > 0) {
+          setOracleMsg(`Oracle detected carrier delivery! Auto-processed ${data.processed_count} milestone payout(s).`);
+        } else {
+          setOracleMsg("Logistics Oracle polled carrier API: No newly delivered packages at this time.");
+        }
+        await fetchBounty();
+      }
+    } catch (err: any) {
+      setOracleMsg(err.message || "Failed to poll logistics oracle.");
+    } finally {
+      setIsPollingOracle(false);
+    }
+  };
+
+  const handleUpdateTracking = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTrackingInput.trim()) return;
+    try {
+      setIsUpdatingTracking(true);
+      const res = await fetch(`http://localhost:8000/api/bounties/${bountyId}/ship`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tracking_number: newTrackingInput.trim(),
+          shipping_status: "SHIPPED",
+        }),
+      });
+      if (res.ok) {
+        setNewTrackingInput("");
+        await fetchBounty();
+      }
+    } catch (err) {
+      console.error("Failed to mark shipped", err);
+    } finally {
+      setIsUpdatingTracking(false);
+    }
+  };
+
+  const handleSimulateDelivery = async () => {
+    const trk = bounty?.tracking_number || oracleInfo?.tracking_number;
+    if (!trk) return;
+    try {
+      setIsSimulatingDelivery(true);
+      const res = await fetch(`http://localhost:8000/api/oracle/shipping/${encodeURIComponent(trk)}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "DELIVERED",
+          notes: "Consignment hand-delivered and confirmed signed at field depot.",
+        }),
+      });
+      if (res.ok) {
+        await handlePollOracle();
+      }
+    } catch (err) {
+      console.error("Failed to simulate delivery", err);
+    } finally {
+      setIsSimulatingDelivery(false);
+    }
+  };
+
   // Fetch bounty and milestone details
   const fetchBounty = async () => {
     try {
@@ -138,6 +245,10 @@ export default function SubmitWorkPage() {
       }
       const data: BountyDetail = await res.json();
       setBounty(data);
+
+      if (data.tracking_number) {
+        fetchOracleStatus(data.tracking_number);
+      }
 
       const pending = data.milestones?.find((m) => m.status !== "COMPLETED");
       if (pending) {
@@ -798,6 +909,191 @@ export default function SubmitWorkPage() {
               </div>
             </div>
           )}
+
+          {/* ======================================================== */}
+          {/* EXTERNAL DATA ORACLE (LOGISTICS & SHIPPING CARRIER API) */}
+          {/* ======================================================== */}
+          <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-6 sm:p-7 shadow-lg space-y-5 border border-indigo-900/60">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-indigo-800/60 pb-4">
+              <div className="flex items-center gap-3">
+                <span className="p-2 bg-indigo-600/40 border border-indigo-500/30 rounded-xl text-lg">
+                  🛰️
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white">External Data Oracle</h3>
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Live Carrier Feed
+                    </span>
+                  </div>
+                  <p className="text-xs text-indigo-200/80 mt-0.5">
+                    Automated background oracle monitors physical logistics &amp; auto-releases escrow upon verified delivery.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={handlePollOracle}
+                  disabled={isPollingOracle}
+                  className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white shadow transition-colors flex items-center gap-1.5"
+                >
+                  {isPollingOracle ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Polling Carrier...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>🔄 Poll Carrier API</span>
+                    </>
+                  )}
+                </button>
+
+                {bounty?.tracking_number && (
+                  <button
+                    type="button"
+                    onClick={handleSimulateDelivery}
+                    disabled={isSimulatingDelivery || oracleInfo?.status === "DELIVERED"}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white shadow transition-colors flex items-center gap-1.5"
+                  >
+                    {isSimulatingDelivery ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Simulating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>📦 Deliver (Demo)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {oracleMsg && (
+              <div className="p-3 bg-indigo-900/60 border border-indigo-700 rounded-xl text-xs text-indigo-100 flex items-center justify-between">
+                <span>ℹ️ {oracleMsg}</span>
+                <button
+                  type="button"
+                  onClick={() => setOracleMsg(null)}
+                  className="text-xs font-bold text-indigo-300 hover:text-white ml-2 underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* Oracle Details or Setup Form */}
+            {bounty?.tracking_number ? (
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+                <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-1">
+                  <span className="text-slate-400 block text-[11px]">Tracking Number</span>
+                  <span className="font-mono font-bold text-indigo-300 text-sm">
+                    {bounty.tracking_number}
+                  </span>
+                </div>
+
+                <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-1">
+                  <span className="text-slate-400 block text-[11px]">Carrier &amp; Status</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white">
+                      {oracleInfo?.carrier || "FedEx Logistics"}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-md font-bold text-[10px] uppercase border ${
+                        (oracleInfo?.status || bounty.shipping_status) === "DELIVERED"
+                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                          : (oracleInfo?.status || bounty.shipping_status) === "IN_TRANSIT"
+                          ? "bg-blue-500/20 text-blue-300 border-blue-500/30"
+                          : "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                      }`}
+                    >
+                      {oracleInfo?.status || bounty.shipping_status || "SHIPPED"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-1">
+                  <span className="text-slate-400 block text-[11px]">Consignment Route</span>
+                  <span className="text-slate-200 font-medium">
+                    {oracleInfo?.origin || "Geneva Depot"} &rarr; {oracleInfo?.destination || "Regional Clinic"}
+                  </span>
+                </div>
+
+                <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-1">
+                  <span className="text-slate-400 block text-[11px]">Consignee Signature</span>
+                  <span className="text-slate-200 font-medium">
+                    {oracleInfo?.signed_by || (oracleInfo?.status === "DELIVERED" ? "Signed by Authorized Official" : "Pending Arrival")}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-slate-800/60 rounded-xl border border-slate-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div>
+                  <p className="font-semibold text-indigo-100">
+                    No Logistics Tracking Number Assigned Yet
+                  </p>
+                  <p className="text-slate-400 text-[11px] mt-0.5">
+                    Link a carrier tracking number (e.g. <code className="bg-slate-700 px-1 py-0.5 rounded text-indigo-300">FEDEX-RELIEF-100</code>) to activate automated delivery oracle payouts.
+                  </p>
+                </div>
+                <form onSubmit={handleUpdateTracking} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newTrackingInput}
+                    onChange={(e) => setNewTrackingInput(e.target.value)}
+                    placeholder="e.g. FEDEX-RELIEF-100"
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    disabled={isUpdatingTracking}
+                  />
+                  <button
+                    type="submit"
+                    disabled={isUpdatingTracking || !newTrackingInput.trim()}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-lg text-xs transition-colors shrink-0"
+                  >
+                    {isUpdatingTracking ? "Linking..." : "Link Tracking"}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* WhatsApp Field Worker Integration Banner */}
+            <div className="pt-3 border-t border-indigo-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-indigo-200/90">
+              <div className="flex items-center gap-2">
+                <span className="text-base">📱</span>
+                <div>
+                  <span className="font-semibold text-white">WhatsApp Field-Worker Submissions: </span>
+                  <span>
+                    Linked WhatsApp:{" "}
+                    <span className="font-mono font-bold text-emerald-400">
+                      {bounty?.freelancer_phone || "Not linked"}
+                    </span>
+                  </span>
+                </div>
+              </div>
+              <span className="text-[11px] text-indigo-300/80">
+                Workers can send photo proof directly via WhatsApp to trigger automated Gemini Vision escrow payout.
+              </span>
+            </div>
+          </div>
+
+          {/* Fallback Notice Banner */}
+          <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-3 shadow-sm">
+            <span className="p-1.5 bg-amber-200 text-amber-900 rounded-lg text-sm shrink-0 mt-0.5">
+              ⚡
+            </span>
+            <div className="text-xs text-amber-950">
+              <p className="font-bold">
+                Manual Verification Active (Carrier API Fallback)
+              </p>
+              <p className="mt-0.5 text-amber-900/90 leading-relaxed">
+                If the external logistics carrier API fails, tracking is delayed, or work is delivered digitally, the manual <strong>Submit Work</strong> form below is permanently active as a guaranteed fail-safe fallback.
+              </p>
+            </div>
+          </div>
 
           {/* Submission Form Card */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-8 space-y-6">

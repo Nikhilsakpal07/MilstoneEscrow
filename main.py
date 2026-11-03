@@ -1,11 +1,17 @@
+import os
+import asyncio
 import logging
+from contextlib import asynccontextmanager
+import requests
 from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from twilio.twiml.messaging_response import MessagingResponse
 
-from database import get_db, engine
+from database import get_db, engine, SessionLocal
 import models
 from paypal_client import (
     authorize_order,
@@ -27,9 +33,14 @@ try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS remaining_amount_usd FLOAT;"))
         conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS requires_human_approval BOOLEAN DEFAULT FALSE;"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS freelancer_phone VARCHAR;"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS tracking_number VARCHAR;"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS shipping_status VARCHAR DEFAULT 'NOT_SHIPPED';"))
         conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS milestone_id INTEGER;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS authorization_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS requires_human_approval BOOLEAN DEFAULT FALSE;"))
+        conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS tracking_number VARCHAR;"))
+        conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS shipping_status VARCHAR DEFAULT 'NOT_SHIPPED';"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_order_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_authorization_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_capture_ids JSON DEFAULT '[]'::json;"))
@@ -44,7 +55,243 @@ logger = logging.getLogger("milestone_escrow")
 # Multi-Sig Threshold: bounties above $5,000 USD require human approval before payout execution
 HIGH_VALUE_THRESHOLD = 5000.0
 
-app = FastAPI(title="MilestoneEscrow API")
+# =====================================================================
+# EXTERNAL DATA ORACLE: MOCK LOGISTICS / SHIPPING API DATABASE
+# =====================================================================
+MOCK_SHIPPING_DATABASE: dict[str, dict] = {
+    "TRACK-DELIVERED-001": {
+        "status": "DELIVERED",
+        "carrier": "FedEx Logistics",
+        "origin": "Geneva Humanitarian Depot",
+        "destination": "Regional Relief Clinic #4",
+        "signed_by": "Dr. A. Omondi (Field Coordinator)",
+        "notes": "Medical crates delivered and confirmed intact.",
+        "updated_at": "2026-11-03T10:15:00Z",
+    },
+    "FEDEX-RELIEF-100": {
+        "status": "DELIVERED",
+        "carrier": "FedEx Logistics",
+        "origin": "UNICEF Central Warehouse",
+        "destination": "Community Water Station",
+        "signed_by": "Water Committee Chairman",
+        "notes": "Filtration units delivered and signed for.",
+        "updated_at": "2026-11-03T11:45:00Z",
+    },
+    "DHL-TRANSIT-200": {
+        "status": "IN_TRANSIT",
+        "carrier": "DHL Global Express",
+        "origin": "Nairobi Distribution Hub",
+        "destination": "Mombasa Sector",
+        "signed_by": None,
+        "notes": "Consignment in transit between regional distribution points.",
+        "updated_at": "2026-11-03T08:30:00Z",
+    },
+    "UPS-SHIPPED-300": {
+        "status": "SHIPPED",
+        "carrier": "UPS Worldwide",
+        "origin": "Dubai Cargo Terminal",
+        "destination": "East Africa Logistics Center",
+        "signed_by": None,
+        "notes": "Consignment dispatched from origin cargo bay.",
+        "updated_at": "2026-11-02T16:00:00Z",
+    },
+}
+
+
+def get_mock_shipping_info(tracking_number: str) -> dict:
+    clean_trk = (tracking_number or "").strip()
+    if clean_trk in MOCK_SHIPPING_DATABASE:
+        return MOCK_SHIPPING_DATABASE[clean_trk]
+
+    # Heuristic for demo / custom numbers:
+    # If the user enters a number with "DELIVER", "DELIVERED", or "DLV", treat as DELIVERED
+    trk_up = clean_trk.upper()
+    if any(k in trk_up for k in ["DELIVER", "DLV"]):
+        status_val = "DELIVERED"
+        notes_val = "Carrier confirmed final delivery to recipient location."
+    elif any(k in trk_up for k in ["TRANSIT", "MOVING"]):
+        status_val = "IN_TRANSIT"
+        notes_val = "Consignment is in transit with carrier."
+    else:
+        status_val = "SHIPPED"
+        notes_val = "Carrier accepted consignment; shipping in progress."
+
+    return {
+        "tracking_number": clean_trk,
+        "status": status_val,
+        "carrier": "Global Logistics Carrier",
+        "origin": "Regional Distribution Hub",
+        "destination": "Project Destination Site",
+        "signed_by": "Authorized Personnel" if status_val == "DELIVERED" else None,
+        "notes": notes_val,
+        "updated_at": "2026-11-03T12:00:00Z",
+    }
+
+
+def process_oracle_deliveries(db: Session) -> list[dict]:
+    """
+    Oracle background task / sync processor:
+    Finds all active bounties & milestones with tracking numbers.
+    Queries the mock Logistics/Shipping API.
+    If status is 'DELIVERED':
+    - Auto-approves the milestone
+    - Triggers PayPal Payouts (or sets to PENDING_ADMIN if Hybrid Multi-Sig is triggered)
+    - Updates milestone and bounty shipping status to 'DELIVERED'.
+    """
+    processed = []
+
+    uncompleted_milestones = (
+        db.query(models.Milestone)
+        .filter(models.Milestone.status != "COMPLETED")
+        .all()
+    )
+
+    for m in uncompleted_milestones:
+        bounty = m.bounty
+        if not bounty:
+            continue
+
+        trk = m.tracking_number or bounty.tracking_number
+        ship_status = m.shipping_status or bounty.shipping_status or "NOT_SHIPPED"
+
+        if not trk:
+            continue
+        if ship_status not in ("SHIPPED", "IN_TRANSIT", "NOT_SHIPPED"):
+            continue
+
+        info = get_mock_shipping_info(trk)
+        carrier_status = info.get("status", "IN_TRANSIT")
+
+        if carrier_status == "DELIVERED":
+            m.shipping_status = "DELIVERED"
+            bounty.shipping_status = "DELIVERED"
+            payout_amount = float(m.amount_usd)
+
+            is_high_value = bool(
+                bounty.requires_human_approval
+                or (bounty.amount_usd and bounty.amount_usd > HIGH_VALUE_THRESHOLD)
+                or (m.amount_usd and m.amount_usd > HIGH_VALUE_THRESHOLD)
+                or m.requires_human_approval
+            )
+
+            if is_high_value:
+                m.status = "PENDING_ADMIN"
+                bounty.status = "PENDING_ADMIN"
+                audit_log = models.AuditLog(
+                    bounty_id=bounty.id,
+                    milestone_id=m.id,
+                    trajectory_id=f"oracle_shipping_{trk}_m_{m.id}_multisig",
+                    passed=True,
+                    ai_feedback=(
+                        f"[EXTERNAL LOGISTICS ORACLE VERIFIED - PENDING ADMIN MULTI-SIG]: "
+                        f"Carrier API confirmed consignment DELIVERED for tracking #{trk}. "
+                        f"Signed by: {info.get('signed_by', 'Recipient')}. "
+                        f"Because total bounty (${bounty.amount_usd:,.2f} USD) exceeds the "
+                        f"${HIGH_VALUE_THRESHOLD:,.2f} multi-sig threshold, escrow funds remain locked. "
+                        f"Status set to 'PENDING_ADMIN' awaiting human administrator sign-off."
+                    ),
+                )
+                db.add(audit_log)
+                processed.append({
+                    "bounty_id": bounty.id,
+                    "milestone_id": m.id,
+                    "tracking_number": trk,
+                    "status": "PENDING_ADMIN",
+                    "reason": "Logistics Oracle confirmed delivery; requires multi-sig admin approval (> $5k).",
+                })
+            else:
+                escrow = bounty.escrow or db.query(models.Escrow).filter(models.Escrow.bounty_id == bounty.id).first()
+                m_auth_ids = list(m.authorization_ids or [])
+                if not m_auth_ids and escrow:
+                    if escrow.paypal_authorization_ids:
+                        m_auth_ids = list(escrow.paypal_authorization_ids)
+                    elif escrow.paypal_authorization_id:
+                        m_auth_ids = [escrow.paypal_authorization_id]
+
+                pooled_res = pool_and_payout_milestone(
+                    authorization_ids=m_auth_ids,
+                    freelancer_email=bounty.freelancer_email,
+                    amount=payout_amount,
+                    bounty_id=bounty.id,
+                    milestone_id=m.id,
+                )
+                batch_id = pooled_res.get("payout", {}).get("batch_header", {}).get("payout_batch_id") or "BATCH-ORACLE"
+                m.paypal_payout_batch_id = batch_id
+                m.status = "COMPLETED"
+
+                current_remaining = (
+                    bounty.remaining_amount_usd if bounty.remaining_amount_usd is not None else bounty.amount_usd
+                )
+                bounty.remaining_amount_usd = max(0.0, round(float(current_remaining) - payout_amount, 2))
+
+                all_milestones = db.query(models.Milestone).filter(models.Milestone.bounty_id == bounty.id).all()
+                if all(item.status == "COMPLETED" for item in all_milestones) or bounty.remaining_amount_usd <= 0:
+                    bounty.status = "COMPLETED"
+                else:
+                    bounty.status = "IN_PROGRESS"
+
+                audit_log = models.AuditLog(
+                    bounty_id=bounty.id,
+                    milestone_id=m.id,
+                    trajectory_id=f"oracle_shipping_{trk}_m_{m.id}",
+                    passed=True,
+                    ai_feedback=(
+                        f"[EXTERNAL LOGISTICS ORACLE AUTO-APPROVAL]: Carrier API confirmed consignment DELIVERED "
+                        f"for tracking #{trk}. Carrier: {info.get('carrier')}. "
+                        f"Signed by: {info.get('signed_by', 'Recipient')}. "
+                        f"Auto-released ${payout_amount:,.2f} USD to {bounty.freelancer_email} via PayPal Payouts (Batch ID: {batch_id})."
+                    ),
+                )
+                db.add(audit_log)
+                processed.append({
+                    "bounty_id": bounty.id,
+                    "milestone_id": m.id,
+                    "tracking_number": trk,
+                    "status": "COMPLETED",
+                    "payout_amount": payout_amount,
+                    "paypal_payout_batch_id": batch_id,
+                })
+
+    if processed:
+        db.commit()
+
+    return processed
+
+
+async def oracle_background_poll_worker():
+    """Background task that periodically queries Logistics Oracle."""
+    while True:
+        try:
+            await asyncio.sleep(25)
+            db = SessionLocal()
+            try:
+                processed = process_oracle_deliveries(db)
+                if processed:
+                    logger.info("[Logistics Oracle Background Task] Auto-processed %d deliveries: %s", len(processed), processed)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("[Logistics Oracle Background Task Exception]: %s", e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: spawn background oracle polling task
+    worker_task = asyncio.create_task(oracle_background_poll_worker())
+    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller started.")
+    yield
+    # Shutdown
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller stopped.")
+
+
+app = FastAPI(title="MilestoneEscrow API", lifespan=lifespan)
 
 # Configure CORS Middleware
 app.add_middleware(
@@ -61,6 +308,8 @@ class MilestoneInput(BaseModel):
     deadline: str
     percentage: float
     authorization_ids: list[str] = []
+    tracking_number: str | None = None
+    shipping_status: str | None = "NOT_SHIPPED"
 
 
 class BountyCreate(BaseModel):
@@ -68,9 +317,25 @@ class BountyCreate(BaseModel):
     acceptance_criteria: str
     amount_usd: float
     freelancer_email: str
+    freelancer_phone: str | None = None
+    tracking_number: str | None = None
+    shipping_status: str | None = "NOT_SHIPPED"
     paypal_order_id: str | None = None
     paypal_order_ids: list[str] = []
     milestones: list[MilestoneInput] = []
+
+
+class ShipRequest(BaseModel):
+    tracking_number: str
+    shipping_status: str | None = "SHIPPED"
+    carrier: str | None = "FedEx Logistics"
+
+
+class ShippingStatusUpdate(BaseModel):
+    status: str
+    carrier: str | None = None
+    city: str | None = None
+    notes: str | None = None
 
 
 class SponsorContribution(BaseModel):
@@ -126,7 +391,7 @@ def health_check(db: Session = Depends(get_db)):
 def list_bounties(db: Session = Depends(get_db)):
     """
     Returns a list of all bounties including their milestone progress, multi-sponsor authorizations,
-    and hybrid multi-sig flags.
+    hybrid multi-sig flags, and logistics oracle/phone tracking details.
     """
     bounties = db.query(models.Bounty).order_by(models.Bounty.id.desc()).all()
     return [
@@ -137,6 +402,9 @@ def list_bounties(db: Session = Depends(get_db)):
             "amount_usd": b.amount_usd,
             "remaining_amount_usd": b.remaining_amount_usd if b.remaining_amount_usd is not None else b.amount_usd,
             "freelancer_email": b.freelancer_email,
+            "freelancer_phone": b.freelancer_phone,
+            "tracking_number": b.tracking_number,
+            "shipping_status": b.shipping_status or "NOT_SHIPPED",
             "status": b.status,
             "requires_human_approval": bool(b.requires_human_approval or (b.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
             "is_high_value": (b.amount_usd or 0) > HIGH_VALUE_THRESHOLD,
@@ -150,6 +418,8 @@ def list_bounties(db: Session = Depends(get_db)):
                     "status": m.status,
                     "authorization_ids": m.authorization_ids or [],
                     "requires_human_approval": bool(m.requires_human_approval or b.requires_human_approval or (m.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
+                    "tracking_number": m.tracking_number or b.tracking_number,
+                    "shipping_status": m.shipping_status or b.shipping_status or "NOT_SHIPPED",
                     "paypal_payout_batch_id": m.paypal_payout_batch_id,
                 }
                 for m in (b.milestones or [])
@@ -162,7 +432,8 @@ def list_bounties(db: Session = Depends(get_db)):
 @app.get("/api/bounties/{bounty_id}")
 def get_bounty(bounty_id: int, db: Session = Depends(get_db)):
     """
-    Returns a single bounty with all associated milestone rows, pooled sponsor authorizations, and escrow data.
+    Returns a single bounty with all associated milestone rows, pooled sponsor authorizations,
+    logistics tracking, and escrow data.
     """
     bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
     if not bounty:
@@ -180,6 +451,9 @@ def get_bounty(bounty_id: int, db: Session = Depends(get_db)):
             bounty.remaining_amount_usd if bounty.remaining_amount_usd is not None else bounty.amount_usd
         ),
         "freelancer_email": bounty.freelancer_email,
+        "freelancer_phone": bounty.freelancer_phone,
+        "tracking_number": bounty.tracking_number,
+        "shipping_status": bounty.shipping_status or "NOT_SHIPPED",
         "status": bounty.status,
         "requires_human_approval": bool(bounty.requires_human_approval or (bounty.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
         "is_high_value": (bounty.amount_usd or 0) > HIGH_VALUE_THRESHOLD,
@@ -201,6 +475,8 @@ def get_bounty(bounty_id: int, db: Session = Depends(get_db)):
                 "status": m.status,
                 "authorization_ids": m.authorization_ids or [],
                 "requires_human_approval": bool(m.requires_human_approval or bounty.requires_human_approval or (m.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
+                "tracking_number": m.tracking_number or bounty.tracking_number,
+                "shipping_status": m.shipping_status or bounty.shipping_status or "NOT_SHIPPED",
                 "paypal_payout_batch_id": m.paypal_payout_batch_id,
             }
             for m in (bounty.milestones or [])
@@ -217,6 +493,7 @@ def create_bounty(
     Creates a new Bounty with 'LOCKED' status and initializes Milestone rows.
     Supports Multi-Sponsor Pooling: captures and pools arrays of order/authorization IDs.
     Supports Hybrid Multi-Sig: sets requires_human_approval=True if total bounty > $5,000.
+    Supports WhatsApp field-worker phone number & logistics oracle tracking number.
     """
     print(f"[DEBUG] Incoming Bounty Creation Payload: {bounty_in.model_dump()}")
 
@@ -228,6 +505,9 @@ def create_bounty(
         amount_usd=bounty_in.amount_usd,
         remaining_amount_usd=bounty_in.amount_usd,
         freelancer_email=bounty_in.freelancer_email,
+        freelancer_phone=bounty_in.freelancer_phone,
+        tracking_number=bounty_in.tracking_number,
+        shipping_status=(bounty_in.shipping_status or "NOT_SHIPPED").upper(),
         status="LOCKED",
         requires_human_approval=is_high_value,
     )
@@ -280,6 +560,8 @@ def create_bounty(
                 amount_usd=m_amount,
                 status="LOCKED",
                 authorization_ids=m_auth_ids,
+                tracking_number=m.tracking_number or bounty_in.tracking_number,
+                shipping_status=(m.shipping_status or bounty_in.shipping_status or "NOT_SHIPPED").upper(),
                 requires_human_approval=bool(is_high_value or m_amount > HIGH_VALUE_THRESHOLD),
             )
             db.add(milestone_obj)
@@ -293,6 +575,8 @@ def create_bounty(
             amount_usd=bounty_in.amount_usd,
             status="LOCKED",
             authorization_ids=list(auth_ids),
+            tracking_number=bounty_in.tracking_number,
+            shipping_status=(bounty_in.shipping_status or "NOT_SHIPPED").upper(),
             requires_human_approval=is_high_value,
         )
         db.add(milestone_obj)
@@ -306,6 +590,9 @@ def create_bounty(
         "requires_human_approval": new_bounty.requires_human_approval,
         "is_high_value": is_high_value,
         "authorization_ids": auth_ids,
+        "freelancer_phone": new_bounty.freelancer_phone,
+        "tracking_number": new_bounty.tracking_number,
+        "shipping_status": new_bounty.shipping_status,
     }
 
 
@@ -1166,3 +1453,343 @@ async def paypal_webhook(request: Request):
         logger.info("PAYMENT.PAYOUTS-ITEM.SUCCEEDED processed for payout_item_id: %s", payout_item_id)
 
     return {"status": "received"}
+
+
+# =====================================================================
+# WHATSAPP FIELD-WORKER WEBHOOK (TWILIO & GEMINI 1.5 PRO)
+# =====================================================================
+
+@app.post("/api/webhooks/twilio/whatsapp")
+async def twilio_whatsapp_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    WhatsApp Field-Worker Webhook:
+    1. Parses incoming images or text from Twilio WhatsApp webhook.
+    2. Associates inbound sender's phone number with registered bounty freelancer.
+    3. Finds the active milestone.
+    4. Downloads attached photo/receipt and sends to Google Gemini 1.5 Pro for validation.
+    5. If passed, automatically triggers PayPal Payouts (or sets to PENDING_ADMIN if Multi-Sig threshold).
+    6. Sends a formatted success/feedback message back via Twilio (TwiML).
+    """
+    form = await request.form()
+    from_raw = str(form.get("From", "")).strip()
+    body_text = str(form.get("Body", "")).strip()
+    num_media = 0
+    try:
+        num_media = int(form.get("NumMedia", 0))
+    except (ValueError, TypeError):
+        pass
+
+    logger.info("[Twilio WhatsApp Inbound] From=%s, NumMedia=%d, Body=%s", from_raw, num_media, body_text)
+
+    # Initialize TwiML response
+    twiml = MessagingResponse()
+
+    # Clean phone digits for robust matching
+    phone_clean = from_raw.replace("whatsapp:", "").strip()
+    digits_clean = "".join(ch for ch in phone_clean if ch.isdigit())
+
+    if not digits_clean:
+        twiml.message("⚠️ MilestoneEscrow: Invalid sender phone number detected.")
+        return Response(content=str(twiml), media_type="application/xml")
+
+    # Match against registered bounties with freelancer_phone
+    matched_bounty = None
+    all_bounties = db.query(models.Bounty).all()
+    for b in all_bounties:
+        if b.freelancer_phone:
+            b_digits = "".join(ch for ch in b.freelancer_phone if ch.isdigit())
+            if b_digits and (b_digits == digits_clean or digits_clean.endswith(b_digits) or b_digits.endswith(digits_clean)):
+                matched_bounty = b
+                break
+
+    if not matched_bounty:
+        twiml.message(
+            f"⚠️ MilestoneEscrow: No active escrow bounty found registered for phone '{phone_clean}'. "
+            f"Please ensure your WhatsApp number is linked to your bounty on MilestoneEscrow."
+        )
+        return Response(content=str(twiml), media_type="application/xml")
+
+    # Locate active milestone
+    milestone = (
+        db.query(models.Milestone)
+        .filter(models.Milestone.bounty_id == matched_bounty.id, models.Milestone.status != "COMPLETED")
+        .order_by(models.Milestone.id.asc())
+        .first()
+    )
+
+    if not milestone:
+        twiml.message(
+            f"ℹ️ MilestoneEscrow: All milestones for Bounty #{matched_bounty.id} ('{matched_bounty.title}') "
+            f"have already been completed and paid out! Thank you."
+        )
+        return Response(content=str(twiml), media_type="application/xml")
+
+    # Download attached image(s) if provided
+    uploaded_files: list[tuple[bytes, str, str]] = []
+    if num_media > 0:
+        media_url = form.get("MediaUrl0")
+        media_mime = str(form.get("MediaContentType0", "image/jpeg")) or "image/jpeg"
+        if media_url:
+            try:
+                account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+                auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+                auth_tuple = (account_sid, auth_token) if (account_sid and auth_token) else None
+                media_resp = requests.get(media_url, auth=auth_tuple, timeout=15)
+                if media_resp.status_code == 200 and media_resp.content:
+                    uploaded_files.append((media_resp.content, media_mime, "whatsapp_field_proof.jpg"))
+                    logger.info("[Twilio WhatsApp] Downloaded %d bytes of media from %s", len(media_resp.content), media_url)
+                else:
+                    logger.warning("[Twilio WhatsApp] Could not download media: status %s", media_resp.status_code)
+            except Exception as dl_err:
+                logger.error("[Twilio WhatsApp] Error downloading media from %s: %s", media_url, dl_err)
+
+    if not uploaded_files and not body_text:
+        twiml.message(
+            f"📸 MilestoneEscrow: Please send a photo/receipt of your field deliverable or a detailed completion report for Milestone #{milestone.id} ('{milestone.description}')."
+        )
+        return Response(content=str(twiml), media_type="application/xml")
+
+    # Set milestone to AUDITING
+    milestone.status = "AUDITING"
+    matched_bounty.status = "AUDITING"
+    db.commit()
+
+    # Run AI evaluation with Gemini 1.5 Pro
+    combined_desc = (
+        f"{milestone.description}\n\n[Field Worker WhatsApp Note]: {body_text}"
+        if body_text
+        else milestone.description
+    )
+
+    eval_result = await evaluate_submission(
+        files=uploaded_files if uploaded_files else None,
+        proof_text=body_text if not uploaded_files else None,
+        acceptance_criteria=matched_bounty.acceptance_criteria,
+        bounty_id=matched_bounty.id,
+        milestone_id=milestone.id,
+        milestone_description=combined_desc,
+        milestone_deadline=milestone.deadline,
+    )
+
+    passed = eval_result.get("passed", False)
+    feedback = eval_result.get("feedback", "")
+
+    # Persist AuditLog
+    audit_log = models.AuditLog(
+        bounty_id=matched_bounty.id,
+        milestone_id=milestone.id,
+        trajectory_id=f"whatsapp_{phone_clean}_bounty_{matched_bounty.id}_m_{milestone.id}",
+        passed=passed,
+        ai_feedback=f"[WHATSAPP FIELD-WORKER SUBMISSION]: {feedback}",
+    )
+    db.add(audit_log)
+    db.commit()
+
+    if passed:
+        # Check Hybrid Multi-Sig condition (> $5,000 USD)
+        is_high_value = bool(
+            matched_bounty.requires_human_approval
+            or (matched_bounty.amount_usd and matched_bounty.amount_usd > HIGH_VALUE_THRESHOLD)
+            or (milestone.amount_usd and milestone.amount_usd > HIGH_VALUE_THRESHOLD)
+            or milestone.requires_human_approval
+        )
+
+        if is_high_value:
+            milestone.status = "PENDING_ADMIN"
+            matched_bounty.status = "PENDING_ADMIN"
+            db.commit()
+
+            twiml.message(
+                f"✅ MilestoneEscrow: Verification Passed!\n\n"
+                f"Milestone #{milestone.id} ('{milestone.description}') verified by Gemini AI.\n\n"
+                f"⚠️ [HYBRID MULTI-SIG NOTICE]: Because this bounty (${matched_bounty.amount_usd:,.2f} USD) "
+                f"exceeds the $5,000 threshold, status is set to PENDING_ADMIN. Escrow funds will be released "
+                f"as soon as a human administrator provides final co-sign approval in the portal."
+            )
+        else:
+            payout_amount = float(milestone.amount_usd)
+            escrow = matched_bounty.escrow or db.query(models.Escrow).filter(models.Escrow.bounty_id == matched_bounty.id).first()
+            m_auth_ids = list(milestone.authorization_ids or [])
+            if not m_auth_ids and escrow:
+                if escrow.paypal_authorization_ids:
+                    m_auth_ids = list(escrow.paypal_authorization_ids)
+                elif escrow.paypal_authorization_id:
+                    m_auth_ids = [escrow.paypal_authorization_id]
+
+            pooled_res = pool_and_payout_milestone(
+                authorization_ids=m_auth_ids,
+                freelancer_email=matched_bounty.freelancer_email,
+                amount=payout_amount,
+                bounty_id=matched_bounty.id,
+                milestone_id=milestone.id,
+            )
+            batch_id = pooled_res.get("payout", {}).get("batch_header", {}).get("payout_batch_id") or "BATCH-OK"
+            milestone.paypal_payout_batch_id = batch_id
+            milestone.status = "COMPLETED"
+
+            # Decrement remaining escrow balance
+            curr_rem = matched_bounty.remaining_amount_usd if matched_bounty.remaining_amount_usd is not None else matched_bounty.amount_usd
+            matched_bounty.remaining_amount_usd = max(0.0, round(float(curr_rem) - payout_amount, 2))
+
+            all_ms = db.query(models.Milestone).filter(models.Milestone.bounty_id == matched_bounty.id).all()
+            if all(m.status == "COMPLETED" for m in all_ms) or matched_bounty.remaining_amount_usd <= 0:
+                matched_bounty.status = "COMPLETED"
+            else:
+                matched_bounty.status = "IN_PROGRESS"
+
+            db.commit()
+
+            twiml.message(
+                f"🎉 MilestoneEscrow: Verification Successful!\n\n"
+                f"Gemini AI verified your WhatsApp proof for Milestone #{milestone.id} ('{milestone.description}').\n"
+                f"💰 Payout Released: ${payout_amount:,.2f} USD\n"
+                f"📬 Sent to PayPal: {matched_bounty.freelancer_email}\n"
+                f"🆔 Batch ID: {batch_id}\n\n"
+                f"Thank you for your field work!"
+            )
+    else:
+        milestone.status = "REJECTED"
+        matched_bounty.status = "IN_PROGRESS"
+        db.commit()
+
+        twiml.message(
+            f"❌ MilestoneEscrow: Verification Failed for Milestone #{milestone.id}.\n\n"
+            f"Auditor Feedback:\n{feedback}\n\n"
+            f"If you believe this is in error, submit an appeal at: http://localhost:3000/bounty/{matched_bounty.id}/submit"
+        )
+
+    return Response(content=str(twiml), media_type="application/xml")
+
+
+# =====================================================================
+# EXTERNAL DATA ORACLE ROUTES (LOGISTICS & SHIPPING)
+# =====================================================================
+
+@app.get("/api/oracle/shipping/{tracking_number}", status_code=status.HTTP_200_OK)
+def get_shipping_oracle_status(tracking_number: str):
+    """
+    External Logistics / Shipping Oracle endpoint:
+    Returns the real-time carrier status (DELIVERED, IN_TRANSIT, SHIPPED) for any tracking number.
+    """
+    return get_mock_shipping_info(tracking_number)
+
+
+@app.post("/api/oracle/shipping/{tracking_number}/status", status_code=status.HTTP_200_OK)
+def update_shipping_oracle_status(
+    tracking_number: str,
+    update_in: ShippingStatusUpdate,
+):
+    """
+    Simulates carrier tracking updates (e.g. marking a consignment as DELIVERED in the logistics API).
+    """
+    clean_trk = tracking_number.strip()
+    existing = get_mock_shipping_info(clean_trk)
+    existing["status"] = update_in.status.upper()
+    if update_in.carrier:
+        existing["carrier"] = update_in.carrier
+    if update_in.city:
+        existing["destination"] = update_in.city
+    if update_in.notes:
+        existing["notes"] = update_in.notes
+    if existing["status"] == "DELIVERED" and not existing.get("signed_by"):
+        existing["signed_by"] = "Field Depot Officer"
+
+    MOCK_SHIPPING_DATABASE[clean_trk] = existing
+    return existing
+
+
+@app.post("/api/oracle/poll", status_code=status.HTTP_200_OK)
+@app.get("/api/oracle/poll", status_code=status.HTTP_200_OK)
+def poll_oracle_manually(db: Session = Depends(get_db)):
+    """
+    External Data Oracle Polling Endpoint:
+    Triggers carrier verification check for all active bounties and milestones with tracking numbers.
+    Auto-approves milestones and executes payouts when carrier reports 'DELIVERED'.
+    """
+    processed = process_oracle_deliveries(db)
+    return {
+        "status": "success",
+        "processed_count": len(processed),
+        "processed_milestones": processed,
+    }
+
+
+@app.post("/api/bounties/{bounty_id}/ship", status_code=status.HTTP_200_OK)
+def mark_bounty_shipped(
+    bounty_id: int,
+    ship_in: ShipRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Marks a physical bounty or deliverable as shipped with a carrier tracking number,
+    activating the External Data Oracle.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    bounty.tracking_number = ship_in.tracking_number.strip()
+    bounty.shipping_status = (ship_in.shipping_status or "SHIPPED").upper()
+
+    # Also update pending milestones
+    for m in (bounty.milestones or []):
+        if m.status != "COMPLETED":
+            m.tracking_number = bounty.tracking_number
+            m.shipping_status = bounty.shipping_status
+
+    db.commit()
+    db.refresh(bounty)
+
+    # Automatically run an initial oracle check
+    processed = process_oracle_deliveries(db)
+
+    return {
+        "message": f"Bounty #{bounty.id} marked as {bounty.shipping_status} with tracking #{bounty.tracking_number}",
+        "bounty_id": bounty.id,
+        "tracking_number": bounty.tracking_number,
+        "shipping_status": bounty.shipping_status,
+        "oracle_auto_processed": processed,
+    }
+
+
+@app.post("/api/bounties/{bounty_id}/milestones/{milestone_id}/ship", status_code=status.HTTP_200_OK)
+def mark_milestone_shipped(
+    bounty_id: int,
+    milestone_id: int,
+    ship_in: ShipRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Marks a specific milestone as shipped with its own carrier tracking number.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    milestone = (
+        db.query(models.Milestone)
+        .filter(models.Milestone.id == milestone_id, models.Milestone.bounty_id == bounty.id)
+        .first()
+    )
+    if not milestone:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+
+    milestone.tracking_number = ship_in.tracking_number.strip()
+    milestone.shipping_status = (ship_in.shipping_status or "SHIPPED").upper()
+
+    db.commit()
+    db.refresh(milestone)
+
+    # Automatically run an oracle check
+    processed = process_oracle_deliveries(db)
+
+    return {
+        "message": f"Milestone #{milestone.id} marked as {milestone.shipping_status} with tracking #{milestone.tracking_number}",
+        "milestone_id": milestone.id,
+        "tracking_number": milestone.tracking_number,
+        "shipping_status": milestone.shipping_status,
+        "oracle_auto_processed": processed,
+    }

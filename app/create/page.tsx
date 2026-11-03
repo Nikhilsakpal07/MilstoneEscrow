@@ -17,6 +17,8 @@ interface ParsedEscrowResponse {
   acceptance_criteria?: string;
   amount_usd?: number;
   freelancer_email?: string;
+  freelancer_phone?: string;
+  tracking_number?: string;
   milestones?: Array<{
     description: string;
     deadline: string;
@@ -43,6 +45,8 @@ export default function CreateBountyPage() {
     acceptance_criteria: "",
     amount_usd: "",
     freelancer_email: "",
+    freelancer_phone: "",
+    tracking_number: "",
   });
 
   const [milestones, setMilestones] = useState<MilestoneRow[]>([
@@ -119,6 +123,8 @@ export default function CreateBountyPage() {
       if (data.acceptance_criteria) setFormData((prev) => ({ ...prev, acceptance_criteria: data.acceptance_criteria || "" }));
       if (data.amount_usd) setFormData((prev) => ({ ...prev, amount_usd: data.amount_usd ? data.amount_usd.toString() : "" }));
       if (data.freelancer_email) setFormData((prev) => ({ ...prev, freelancer_email: data.freelancer_email || "" }));
+      if (data.freelancer_phone) setFormData((prev) => ({ ...prev, freelancer_phone: data.freelancer_phone || "" }));
+      if (data.tracking_number) setFormData((prev) => ({ ...prev, tracking_number: data.tracking_number || "" }));
 
       if (data.milestones && data.milestones.length > 0) {
         setMilestones(
@@ -548,6 +554,51 @@ export default function CreateBountyPage() {
                   />
                 </div>
               </div>
+
+              {/* WhatsApp & Logistics Oracle Optional Fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                <div>
+                  <label
+                    htmlFor="freelancer_phone"
+                    className="block text-sm font-semibold text-slate-700 mb-1.5"
+                  >
+                    Field-Worker WhatsApp Phone <span className="text-slate-400 font-normal">(Optional)</span>
+                  </label>
+                  <input
+                    type="tel"
+                    id="freelancer_phone"
+                    name="freelancer_phone"
+                    value={formData.freelancer_phone}
+                    onChange={handleInputChange}
+                    placeholder="e.g. +14155552671"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm transition-all font-mono"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Enables field workers to submit receipts or delivery photos directly via WhatsApp.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="tracking_number"
+                    className="block text-sm font-semibold text-slate-700 mb-1.5"
+                  >
+                    Carrier Tracking Number <span className="text-slate-400 font-normal">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    id="tracking_number"
+                    name="tracking_number"
+                    value={formData.tracking_number}
+                    onChange={handleInputChange}
+                    placeholder="e.g. FEDEX-RELIEF-100 or TRACK-DELIVERED-001"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm transition-all font-mono"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    External Data Oracle polls carrier status and auto-approves upon delivery.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {/* Section 2: Milestone Breakdown */}
@@ -768,11 +819,14 @@ export default function CreateBountyPage() {
                           acceptance_criteria: formData.acceptance_criteria,
                           amount_usd: parseFloat(formData.amount_usd),
                           freelancer_email: formData.freelancer_email,
+                          freelancer_phone: formData.freelancer_phone.trim() || undefined,
+                          tracking_number: formData.tracking_number.trim() || undefined,
                           paypal_order_id: data.orderID,
                           milestones: milestones.map((m) => ({
                             description: m.description,
                             deadline: m.deadline,
                             percentage: Number(m.percentage),
+                            tracking_number: formData.tracking_number.trim() || undefined,
                           })),
                         };
 

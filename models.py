@@ -15,6 +15,9 @@ class Bounty(Base):
     freelancer_email = Column(String)
     status = Column(String, default="AWAITING_FUNDS")  # AWAITING_FUNDS, LOCKED, IN_PROGRESS, PENDING_ADMIN, COMPLETED, REJECTED
     requires_human_approval = Column(Boolean, default=False)  # Hybrid Multi-Sig (> $5,000 threshold)
+    freelancer_phone = Column(String, nullable=True, index=True)  # WhatsApp Field-Worker Integration
+    tracking_number = Column(String, nullable=True, index=True)  # External Data Oracle (Logistics)
+    shipping_status = Column(String, default="NOT_SHIPPED")  # NOT_SHIPPED, SHIPPED, IN_TRANSIT, DELIVERED
 
     escrow = relationship("Escrow", back_populates="bounty", uselist=False)
     audit_logs = relationship("AuditLog", back_populates="bounty")
@@ -34,6 +37,8 @@ class Milestone(Base):
     paypal_payout_batch_id = Column(String, nullable=True)
     authorization_ids = Column(JSON, default=list)  # Multi-Sponsor Pooling: array of PayPal authorization IDs
     requires_human_approval = Column(Boolean, default=False)  # Hybrid Multi-Sig (> $5,000)
+    tracking_number = Column(String, nullable=True, index=True)  # Logistics tracking number
+    shipping_status = Column(String, default="NOT_SHIPPED")  # NOT_SHIPPED, SHIPPED, IN_TRANSIT, DELIVERED
 
     bounty = relationship("Bounty", back_populates="milestones")
     audit_logs = relationship("AuditLog", back_populates="milestone")

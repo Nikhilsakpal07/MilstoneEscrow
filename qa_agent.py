@@ -24,6 +24,9 @@ from exif_inspector import extract_and_verify_exif
 
 def _format_result(data: dict) -> dict:
     """Helper to ensure standard JSON schema returned to callers."""
+    if "milestones" in data or "compromise_milestones" in data:
+        return data
+
     res = {
         "passed": bool(data.get("passed", False)),
         "feedback": str(data.get("feedback", "No feedback provided.")),
@@ -87,6 +90,32 @@ def _parse_agent_json(text: str) -> dict:
                 pass
 
     raise ValueError("Could not extract a valid JSON object from model response")
+
+
+def _generate_with_gemini(client, contents, preferred_model: str | None = None):
+    """
+    Robust Gemini model dispatcher that iterates through healthy candidate models
+    (prioritizing gemini-3.5-flash and gemini-3-flash-preview, with gemini-1.5-pro fallback)
+    to gracefully handle 503 high-demand surges or regional quota limits.
+    """
+    candidates = []
+    if preferred_model:
+        candidates.append(preferred_model)
+    env_model = os.getenv("GEMINI_MODEL")
+    if env_model and env_model not in candidates:
+        candidates.append(env_model)
+    for m in ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-1.5-pro", "gemini-3.8-flash"]:
+        if m not in candidates:
+            candidates.append(m)
+
+    last_err = None
+    for model_name in candidates:
+        try:
+            return client.models.generate_content(model=model_name, contents=contents)
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 
 async def evaluate_multimodal_submission(
@@ -189,21 +218,10 @@ Ensure that "passed" is a boolean (true or false). Do not include any text outsi
 """
 
     contents = [*parts, prompt]
-    primary_model = os.getenv("GEMINI_MULTIMODAL_MODEL", "gemini-1.5-pro")
+    primary_model = os.getenv("GEMINI_MULTIMODAL_MODEL", "gemini-3.5-flash")
 
-    print(f"[QA Agent] Analyzing {len(parts)} multimodal proof document(s) with Google Gemini ({primary_model}) for bounty #{bounty_id}...")
-
-    try:
-        response = client.models.generate_content(
-            model=primary_model,
-            contents=contents,
-        )
-    except Exception as model_err:
-        print(f"[QA Agent Notice] Primary model ({primary_model}) returned error: {model_err}. Trying fallback model...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-        )
+    print(f"[QA Agent] Analyzing {len(parts)} multimodal proof document(s) with Google Gemini for bounty #{bounty_id}...")
+    response = _generate_with_gemini(client, contents, preferred_model=primary_model)
 
     response_text = response.text or ""
     print(f"[QA Agent] Received Gemini response ({len(response_text)} chars). Parsing evaluation result...")
@@ -288,20 +306,9 @@ Notice:
 - Do not output any markdown or commentary outside the JSON block.
 """
 
-    model_name = os.getenv("GEMINI_MEDIATOR_MODEL", "gemini-1.5-pro")
+    model_name = os.getenv("GEMINI_MEDIATOR_MODEL", "gemini-3.5-flash")
     print(f"[Mediator AI] Arbitrating dispute for Bounty #{bounty_id}, Milestone #{milestone_id} using {model_name}...")
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=mediator_prompt,
-        )
-    except Exception as err:
-        print(f"[Mediator AI Notice] Primary model ({model_name}) error: {err}. Trying fallback model...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=mediator_prompt,
-        )
+    response = _generate_with_gemini(client, mediator_prompt, preferred_model=model_name)
 
     response_text = response.text or ""
     print(f"[Mediator AI] Arbitration ruling received ({len(response_text)} chars). Parsing decision...")
@@ -316,9 +323,67 @@ Notice:
     }
 
 
+async def evaluate_text_submission(
+    proof_text: str,
+    acceptance_criteria: str,
+    bounty_id: int,
+    milestone_id: int | None = None,
+    milestone_description: str | None = None,
+    milestone_deadline: str | None = None,
+) -> dict:
+    """
+    Evaluates field-worker reports and text proof of work using Google Gemini 1.5 Pro.
+    """
+    from google import genai
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in environment variables.")
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = f"""You are an autonomous auditor evaluating on-the-ground field reports and proof of work (such as WhatsApp field worker updates, delivery confirmation notes, humanitarian aid distribution logs) for milestone escrow release.
+
+Bounty ID: #{bounty_id}
+Milestone ID: #{milestone_id or 'General'}
+Milestone Deadline: {milestone_deadline or 'Open / Not specified'}
+Milestone Scope:
+{milestone_description or 'Verify milestone completion.'}
+
+Overall Acceptance Criteria:
+{acceptance_criteria}
+
+Field Worker's Report / Submitted Proof:
+\"\"\"{proof_text}\"\"\"
+
+Instructions:
+1. Objectively evaluate if the submitted report and proof fulfills the milestone requirements.
+2. Verify that key deliverables, delivery locations, or milestone items are addressed.
+3. Output your final response strictly as a raw JSON block at the very end in the exact format:
+{{
+  "passed": boolean,
+  "feedback": "Detailed reasoning explaining the audit decision and whether the report satisfies the milestone criteria.",
+  "extracted_data": {{
+    "report_summary": "Extracted summary of verified field work",
+    "status": "APPROVED or REJECTED"
+  }}
+}}
+
+Ensure that "passed" is a boolean (true or false). Do not include any text outside or after the JSON block.
+"""
+
+    primary_model = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.5-flash")
+    print(f"[QA Agent] Auditing text submission with Gemini ({primary_model}) for bounty #{bounty_id}...")
+    response = _generate_with_gemini(client, prompt, preferred_model=primary_model)
+
+    response_text = response.text or ""
+    return _parse_agent_json(response_text)
+
+
 async def evaluate_submission(
     github_url: str | None = None,
     files: list[tuple[bytes, str, str]] | None = None,
+    proof_text: str | None = None,
     acceptance_criteria: str = "",
     bounty_id: int = 0,
     milestone_id: int | None = None,
@@ -328,6 +393,7 @@ async def evaluate_submission(
     """
     Main evaluation entry point:
     - If uploaded files (receipts/photos/PDFs) are provided, triggers Gemini 1.5 Pro multimodal evaluation with Pillow EXIF inspection.
+    - If proof_text is provided, triggers Gemini 1.5 Pro field report evaluation.
     - If a GitHub URL is provided, runs code repository cloning and test suite audit.
     """
     # 1. Multimodal File Submission (Receipts / Proof of work)
@@ -341,11 +407,22 @@ async def evaluate_submission(
             milestone_deadline=milestone_deadline,
         )
 
-    # 2. GitHub URL Repository Submission
+    # 2. Text / Field Worker Report Submission (e.g. WhatsApp text reports)
+    if proof_text and proof_text.strip():
+        return await evaluate_text_submission(
+            proof_text=proof_text,
+            acceptance_criteria=acceptance_criteria,
+            bounty_id=bounty_id,
+            milestone_id=milestone_id,
+            milestone_description=milestone_description,
+            milestone_deadline=milestone_deadline,
+        )
+
+    # 3. GitHub URL Repository Submission
     if not github_url or not github_url.strip():
         return {
             "passed": False,
-            "feedback": "Submission rejected: Neither a valid GitHub repository URL nor proof documents/receipts were provided.",
+            "feedback": "Submission rejected: Neither a valid GitHub repository URL, proof documents/receipts, nor field report were provided.",
         }
 
     scope_tag = f"m_{milestone_id}" if milestone_id is not None else "full"
@@ -554,6 +631,8 @@ Instructions:
    - Concrete, verifiable Acceptance Criteria
    - Total Bounty Amount in USD (float)
    - Freelancer PayPal Email (extract if mentioned, otherwise empty string "")
+   - Freelancer WhatsApp Phone (extract if mentioned e.g. "+1415...", otherwise empty string "")
+   - Carrier Tracking Number (extract if mentioned e.g. "FEDEX-...", otherwise empty string "")
    - A sequential array of Milestones:
      * description: concise deliverable for this milestone phase
      * deadline: calculated ISO date (YYYY-MM-DD), relative to today ({today_str}) based on any stated timelines or sensible defaults (e.g., 7-14 days intervals)
@@ -567,6 +646,8 @@ Instructions:
   "acceptance_criteria": "string",
   "amount_usd": float,
   "freelancer_email": "string",
+  "freelancer_phone": "string",
+  "tracking_number": "string",
   "milestones": [
     {{
       "description": "string",
@@ -581,20 +662,9 @@ Instructions:
 Do not include any text, markdown, or commentary outside the JSON block.
 """
 
-    model_name = os.getenv("GEMINI_PARSE_MODEL", "gemini-1.5-pro")
+    model_name = os.getenv("GEMINI_PARSE_MODEL", "gemini-3.5-flash")
     print(f"[Conversational Escrow] Parsing natural language prompt with {model_name}...")
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=architect_prompt,
-        )
-    except Exception as err:
-        print(f"[Conversational Escrow Notice] Primary model error: {err}. Trying gemini-2.5-flash fallback...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=architect_prompt,
-        )
+    response = _generate_with_gemini(client, architect_prompt, preferred_model=model_name)
 
     response_text = response.text or ""
     print(f"[Conversational Escrow] Gemini response received ({len(response_text)} chars). Parsing JSON...")
@@ -677,20 +747,9 @@ Counter-Offer Statement:
 Ensure the sum of milestone percentages strictly equals 100.0. Do not output any commentary outside the JSON block.
 """
 
-    model_name = os.getenv("GEMINI_NEGOTIATE_MODEL", "gemini-1.5-pro")
+    model_name = os.getenv("GEMINI_NEGOTIATE_MODEL", "gemini-3.5-flash")
     print(f"[AI Negotiation Agent] Arbitrating scope counter-offer for Bounty #{bounty_id} using {model_name}...")
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=negotiation_prompt,
-        )
-    except Exception as err:
-        print(f"[AI Negotiation Agent Notice] Primary model error: {err}. Trying gemini-2.5-flash fallback...")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=negotiation_prompt,
-        )
+    response = _generate_with_gemini(client, negotiation_prompt, preferred_model=model_name)
 
     response_text = response.text or ""
     print(f"[AI Negotiation Agent] Compromise received ({len(response_text)} chars). Parsing JSON...")
