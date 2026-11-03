@@ -8,7 +8,7 @@ from sqlalchemy import text
 from database import get_db, engine
 import models
 from paypal_client import authorize_order, capture_authorization, execute_payout
-from qa_agent import evaluate_submission
+from qa_agent import evaluate_submission, mediate_dispute
 
 # Ensure database tables and newly added columns exist
 models.Base.metadata.create_all(bind=engine)
@@ -53,6 +53,11 @@ class BountyCreate(BaseModel):
 
 class WorkSubmission(BaseModel):
     github_url: str | None = None
+    milestone_id: int | None = None
+
+
+class AppealRequest(BaseModel):
+    appeal_text: str
     milestone_id: int | None = None
 
 
@@ -222,7 +227,7 @@ async def submit_work(
     Accepts either multipart form data (file uploads: receipts/images/PDFs) or JSON payloads (GitHub URLs).
     1. Fetches the Bounty, Escrow, and specific Milestone.
     2. Runs automated AI QA evaluation:
-       - Multimodal analysis via Gemini 1.5 Pro if receipts/images/PDFs are provided.
+       - Multimodal analysis via Gemini 1.5 Pro and Pillow EXIF verification for uploaded receipts.
        - Code repository cloning and test execution if a GitHub URL is provided.
     3. Persists evaluation outcome to AuditLog.
     4. If passed:
@@ -321,7 +326,7 @@ async def submit_work(
     bounty.status = "AUDITING"
     db.commit()
 
-    # Run AI QA Evaluation (multimodal receipt extraction OR code QA)
+    # Run AI QA Evaluation (multimodal receipt extraction with Pillow EXIF OR code QA)
     eval_result = await evaluate_submission(
         github_url=github_url,
         files=uploaded_files_data if len(uploaded_files_data) > 0 else None,
@@ -329,6 +334,7 @@ async def submit_work(
         bounty_id=bounty_id,
         milestone_id=milestone.id,
         milestone_description=milestone.description,
+        milestone_deadline=milestone.deadline,
     )
 
     passed = eval_result.get("passed", False)
@@ -408,6 +414,151 @@ async def submit_work(
         "feedback": feedback,
         "passed": passed,
         "extracted_data": extracted_data,
+    }
+
+
+@app.post("/api/bounties/{bounty_id}/milestones/{milestone_id}/appeal", status_code=status.HTTP_200_OK)
+@app.post("/api/bounties/{bounty_id}/appeal", status_code=status.HTTP_200_OK)
+async def appeal_rejection(
+    bounty_id: int,
+    appeal_in: AppealRequest,
+    milestone_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Dispute Resolution / Appeal Route:
+    If a milestone submission was rejected, the user can submit an appeal explanation.
+    Spawns the Mediator AI to analyze the original criteria, the auditor's rejection reason,
+    and the user's defense to make a binding decision on whether to override the rejection.
+    If overridden, automatically captures authorization and executes the milestone payout.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bounty with ID {bounty_id} not found.",
+        )
+
+    # Identify targeted milestone
+    target_mid = milestone_id or appeal_in.milestone_id
+    if target_mid:
+        milestone = db.query(models.Milestone).filter(
+            models.Milestone.id == target_mid,
+            models.Milestone.bounty_id == bounty.id,
+        ).first()
+    else:
+        # Default to the most recently rejected milestone
+        milestone = db.query(models.Milestone).filter(
+            models.Milestone.bounty_id == bounty.id,
+            models.Milestone.status == "REJECTED",
+        ).order_by(models.Milestone.id.desc()).first()
+
+        if not milestone:
+            # Fallback to any uncompleted milestone
+            milestone = db.query(models.Milestone).filter(
+                models.Milestone.bounty_id == bounty.id,
+                models.Milestone.status != "COMPLETED",
+            ).order_by(models.Milestone.id.asc()).first()
+
+    if not milestone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No eligible milestone found to appeal for this bounty.",
+        )
+
+    escrow = bounty.escrow or db.query(models.Escrow).filter(models.Escrow.bounty_id == bounty_id).first()
+
+    # Look up the last failed audit log to provide the exact rejection reason
+    last_audit = db.query(models.AuditLog).filter(
+        models.AuditLog.bounty_id == bounty.id,
+        models.AuditLog.milestone_id == milestone.id,
+        models.AuditLog.passed == False,
+    ).order_by(models.AuditLog.id.desc()).first()
+
+    rejection_reason = (
+        last_audit.ai_feedback
+        if last_audit and last_audit.ai_feedback
+        else f"Milestone #{milestone.id} was marked as REJECTED during automated evaluation."
+    )
+
+    # Run Mediator AI Arbitration
+    mediation_result = await mediate_dispute(
+        bounty_id=bounty.id,
+        milestone_id=milestone.id,
+        milestone_criteria=milestone.description or bounty.acceptance_criteria,
+        rejection_reason=rejection_reason,
+        appeal_text=appeal_in.appeal_text,
+        bounty_title=bounty.title,
+        milestone_amount=float(milestone.amount_usd),
+    )
+
+    override_granted = bool(mediation_result.get("override_rejection", False))
+    payout_amount = 0.0
+
+    if override_granted:
+        # Release funds if escrow authorization is active
+        if escrow and escrow.paypal_authorization_id:
+            if not escrow.paypal_capture_id:
+                capture_res = capture_authorization(escrow.paypal_authorization_id)
+                if isinstance(capture_res, dict) and "id" in capture_res:
+                    escrow.paypal_capture_id = capture_res["id"]
+
+            payout_amount = float(milestone.amount_usd)
+            payout_res = execute_payout(
+                freelancer_email=bounty.freelancer_email,
+                amount=payout_amount,
+                bounty_id=bounty_id,
+                milestone_id=milestone.id,
+            )
+            batch_id = payout_res.get("batch_header", {}).get("payout_batch_id")
+            milestone.paypal_payout_batch_id = batch_id
+
+        milestone.status = "COMPLETED"
+
+        # Deduct payout from remaining escrow funds
+        current_remaining = (
+            bounty.remaining_amount_usd if bounty.remaining_amount_usd is not None else bounty.amount_usd
+        )
+        bounty.remaining_amount_usd = max(0.0, round(float(current_remaining) - payout_amount, 2))
+
+        all_milestones = db.query(models.Milestone).filter(models.Milestone.bounty_id == bounty.id).all()
+        if all(m.status == "COMPLETED" for m in all_milestones) or bounty.remaining_amount_usd <= 0:
+            bounty.status = "COMPLETED"
+        else:
+            bounty.status = "IN_PROGRESS"
+
+        audit_log = models.AuditLog(
+            bounty_id=bounty.id,
+            milestone_id=milestone.id,
+            trajectory_id=f"bounty_{bounty_id}_m_{milestone.id}_mediator_override",
+            passed=True,
+            ai_feedback=f"[MEDIATOR OVERRIDE]: {mediation_result.get('reasoning')}",
+        )
+        db.add(audit_log)
+    else:
+        audit_log = models.AuditLog(
+            bounty_id=bounty.id,
+            milestone_id=milestone.id,
+            trajectory_id=f"bounty_{bounty_id}_m_{milestone.id}_mediator_upheld",
+            passed=False,
+            ai_feedback=f"[MEDIATOR RULING UPHELD]: {mediation_result.get('reasoning')}",
+        )
+        db.add(audit_log)
+
+    db.commit()
+    db.refresh(bounty)
+    db.refresh(milestone)
+
+    return {
+        "status": bounty.status,
+        "bounty_id": bounty.id,
+        "milestone_id": milestone.id,
+        "override_rejection": override_granted,
+        "final_decision": mediation_result.get("final_decision"),
+        "reasoning": mediation_result.get("reasoning"),
+        "milestone_status": milestone.status,
+        "milestone_amount_paid": payout_amount,
+        "remaining_amount_usd": bounty.remaining_amount_usd,
     }
 
 

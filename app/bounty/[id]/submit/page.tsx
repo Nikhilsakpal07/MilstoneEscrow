@@ -30,6 +30,9 @@ interface ExtractedReceiptData {
   date?: string;
   vendor?: string;
   items?: string[];
+  exif_photo_date?: string;
+  exif_timeline_aligned?: boolean;
+  exif_timeline_feedback?: string;
 }
 
 interface EvaluationResult {
@@ -42,6 +45,18 @@ interface EvaluationResult {
   passed: boolean;
   feedback: string;
   extracted_data?: ExtractedReceiptData;
+}
+
+interface AppealResult {
+  status: string;
+  bounty_id: number;
+  milestone_id: number;
+  override_rejection: boolean;
+  final_decision: "OVERRIDE_REJECTION" | "UPHOLD_REJECTION";
+  reasoning: string;
+  milestone_status: string;
+  milestone_amount_paid: number;
+  remaining_amount_usd: number;
 }
 
 type SubmissionMode = "receipt" | "github";
@@ -64,6 +79,13 @@ export default function SubmitWorkPage() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
+
+  // Dispute Resolution & Mediator AI State
+  const [appealText, setAppealText] = useState("");
+  const [isAppealing, setIsAppealing] = useState(false);
+  const [appealError, setAppealError] = useState<string | null>(null);
+  const [appealResult, setAppealResult] = useState<AppealResult | null>(null);
+  const [showAppealForm, setShowAppealForm] = useState(false);
 
   // Fetch bounty and milestone details
   const fetchBounty = async () => {
@@ -168,12 +190,68 @@ export default function SubmitWorkPage() {
 
       const data: EvaluationResult = await response.json();
       setResult(data);
+      if (!data.passed) {
+        setShowAppealForm(true);
+      }
       fetchBounty();
     } catch (err: any) {
       console.error("Submission evaluation error:", err);
       setError(err.message || "An unexpected error occurred during submission.");
     } finally {
       setIsEvaluating(false);
+    }
+  };
+
+  const handleAppealSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bountyId) return;
+
+    if (!appealText.trim()) {
+      setAppealError("Please provide a detailed factual explanation for your appeal.");
+      return;
+    }
+
+    const targetMid = selectedMilestoneId || (result ? result.milestone_id : undefined);
+    if (!targetMid) {
+      setAppealError("No milestone selected for dispute arbitration.");
+      return;
+    }
+
+    try {
+      setIsAppealing(true);
+      setAppealError(null);
+      setAppealResult(null);
+
+      const response = await fetch(
+        `http://localhost:8000/api/bounties/${bountyId}/milestones/${targetMid}/appeal`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            appeal_text: appealText.trim(),
+            milestone_id: targetMid,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `Dispute appeal failed with status ${response.status}`
+        );
+      }
+
+      const data: AppealResult = await response.json();
+      setAppealResult(data);
+      setAppealText("");
+      await fetchBounty();
+    } catch (err: any) {
+      console.error("Dispute arbitration error:", err);
+      setAppealError(err.message || "An error occurred during mediator arbitration.");
+    } finally {
+      setIsAppealing(false);
     }
   };
 
@@ -618,15 +696,20 @@ export default function SubmitWorkPage() {
 
                 {/* Gemini Extracted Data Card */}
                 {result.extracted_data && (
-                  <div className="p-4 bg-white/90 rounded-xl border border-slate-200 text-xs space-y-2.5">
-                    <h4 className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                      </svg>
-                      <span>Gemini 1.5 Pro Extracted Receipt Data</span>
-                    </h4>
+                  <div className="p-4 bg-white/90 rounded-xl border border-slate-200 text-xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <h4 className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                        <span>Gemini 1.5 Pro Extracted Receipt Data</span>
+                      </h4>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 uppercase">
+                        AI Multimodal Audit
+                      </span>
+                    </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-y border-slate-100 py-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-b border-slate-100 pb-2">
                       <div>
                         <span className="block text-[11px] text-slate-400">Total Extracted</span>
                         <span className="font-bold font-mono text-slate-800">
@@ -661,6 +744,36 @@ export default function SubmitWorkPage() {
                         </ul>
                       </div>
                     )}
+
+                    {/* Pillow EXIF Forensic Security Data */}
+                    {result.extracted_data.exif_timeline_feedback && (
+                      <div className="pt-2 border-t border-slate-100 flex items-start gap-2.5">
+                        <div className="shrink-0 mt-0.5">
+                          {result.extracted_data.exif_timeline_aligned === false ? (
+                            <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px] border border-rose-300 uppercase">
+                              EXIF Anomaly
+                            </span>
+                          ) : result.extracted_data.exif_photo_date ? (
+                            <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px] border border-emerald-300 uppercase">
+                              EXIF Verified
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold text-[10px] border border-slate-300 uppercase">
+                              EXIF Metadata
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-600 leading-relaxed">
+                          <span className="font-semibold text-slate-800">Pillow EXIF Forensic Check: </span>
+                          {result.extracted_data.exif_photo_date && (
+                            <span className="font-mono text-slate-800 mr-1.5 font-medium">
+                              [Photo Taken: {result.extracted_data.exif_photo_date}]
+                            </span>
+                          )}
+                          <span>{result.extracted_data.exif_timeline_feedback}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -682,6 +795,163 @@ export default function SubmitWorkPage() {
                     Return to Dashboard
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Dispute Resolution & Mediator AI Appeal Card */}
+            {((result && !result.passed) || (selectedMilestone?.status === "REJECTED") || appealResult) && (
+              <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-6 sm:p-7 shadow-lg space-y-5 border border-indigo-900/50">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-indigo-800/60 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-300">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        <span>Dispute Resolution &amp; Mediator AI</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 uppercase tracking-wider font-semibold">
+                          Binding Arbitration
+                        </span>
+                      </h3>
+                      <p className="text-xs text-indigo-200/70 mt-0.5">
+                        Contest automated rejections. The Chief Escrow Mediator AI reviews milestone criteria, rejection findings, and your defense to make a binding ruling.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {appealError && (
+                  <div className="p-3.5 bg-rose-950/60 border border-rose-800/80 rounded-xl text-xs text-rose-200">
+                    <span className="font-semibold">Arbitration Error: </span>
+                    <span>{appealError}</span>
+                  </div>
+                )}
+
+                {/* Appeal Decision Result */}
+                {appealResult && (
+                  <div
+                    className={`p-5 rounded-xl border space-y-3.5 ${
+                      appealResult.override_rejection
+                        ? "bg-emerald-950/40 border-emerald-500/40"
+                        : "bg-rose-950/40 border-rose-500/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-3 h-3 rounded-full ${
+                            appealResult.override_rejection ? "bg-emerald-400" : "bg-rose-400"
+                          }`}
+                        />
+                        <h4
+                          className={`text-sm font-bold tracking-wide ${
+                            appealResult.override_rejection ? "text-emerald-300" : "text-rose-300"
+                          }`}
+                        >
+                          {appealResult.override_rejection
+                            ? "ARBITRATION RULING: REJECTION OVERTURNED"
+                            : "ARBITRATION RULING: REJECTION UPHELD"}
+                        </h4>
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold px-2.5 py-0.5 rounded border uppercase ${
+                          appealResult.override_rejection
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/30"
+                            : "bg-rose-500/20 text-rose-300 border-rose-400/30"
+                        }`}
+                      >
+                        {appealResult.final_decision}
+                      </span>
+                    </div>
+
+                    {appealResult.override_rejection && (
+                      <div className="p-3 bg-emerald-900/30 border border-emerald-500/30 rounded-lg text-xs text-emerald-200 space-y-1">
+                        <p className="font-semibold text-emerald-100">
+                          &check; Escrow Funds Released! PayPal Payout of ${appealResult.milestone_amount_paid.toFixed(2)} USD was executed to the beneficiary.
+                        </p>
+                        <p className="text-emerald-300/80 font-mono text-[11px]">
+                          Remaining Escrow Balance: ${appealResult.remaining_amount_usd.toFixed(2)} USD
+                        </p>
+                      </div>
+                    )}
+
+                    {!appealResult.override_rejection && (
+                      <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-lg text-xs text-rose-200">
+                        <p className="font-semibold text-rose-100">
+                          Rejection Upheld. Escrow funds remain securely held in reserve until acceptable milestone proof is submitted.
+                        </p>
+                      </div>
+                    )}
+
+                    <div>
+                      <p className="text-xs font-semibold text-indigo-200 mb-1">
+                        Mediator AI Legalistic Justification:
+                      </p>
+                      <div className="bg-black/30 p-3.5 rounded-lg border border-indigo-900/60 text-xs font-mono text-indigo-100 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+                        {appealResult.reasoning}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Appeal Submission Form */}
+                <form onSubmit={handleAppealSubmit} className="space-y-3.5">
+                  <div>
+                    <label
+                      htmlFor="appeal_text"
+                      className="block text-xs font-semibold text-indigo-200 mb-1.5"
+                    >
+                      Your Formal Appeal &amp; Explanation:
+                    </label>
+                    <textarea
+                      id="appeal_text"
+                      rows={4}
+                      value={appealText}
+                      onChange={(e) => setAppealText(e.target.value)}
+                      placeholder="Explain why the automated rejection was mistaken (e.g. clarify receipt line items, currency conversion, delivery logistics, or how the submission fulfills milestone intent)..."
+                      disabled={isAppealing}
+                      className="w-full p-3 rounded-xl bg-slate-950/70 border border-indigo-800/70 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 text-xs text-white placeholder-slate-500 font-sans transition-colors resize-none disabled:opacity-50"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[11px] text-indigo-300/70">
+                      Appealing Phase #{selectedMilestone?.id || result?.milestone_id}: {selectedMilestone?.description || result?.milestone_description || "Selected Milestone"}
+                    </span>
+                    <button
+                      type="submit"
+                      disabled={isAppealing || !appealText.trim()}
+                      className="py-2.5 px-5 bg-gradient-to-r from-indigo-500 to-blue-600 hover:from-indigo-600 hover:to-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center gap-2"
+                    >
+                      {isAppealing ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <span>Arbitrating Dispute...</span>
+                        </>
+                      ) : (
+                        <span>Submit Appeal to Mediator AI</span>
+                      )}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Distinct Mediator Loading State */}
+                {isAppealing && (
+                  <div className="p-4 bg-indigo-950/60 border border-indigo-700/50 rounded-xl space-y-2 animate-pulse text-xs text-indigo-200">
+                    <div className="flex items-center gap-2 font-bold text-indigo-100">
+                      <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                      <span>Chief Escrow Dispute Mediator AI in Session...</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-indigo-300/80 pl-2 text-[11px]">
+                      <li>Reviewing original milestone acceptance criteria</li>
+                      <li>Cross-examining automated auditor rejection findings</li>
+                      <li>Analyzing appellant's defense argument &amp; contextual evidence</li>
+                      <li>Delivering binding ruling on escrow payout release</li>
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>

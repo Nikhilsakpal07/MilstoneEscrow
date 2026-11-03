@@ -19,6 +19,8 @@ try:
 except ImportError:
     policy = None
 
+from exif_inspector import extract_and_verify_exif
+
 
 def _format_result(data: dict) -> dict:
     """Helper to ensure standard JSON schema returned to callers."""
@@ -28,20 +30,25 @@ def _format_result(data: dict) -> dict:
     }
     if "extracted_data" in data and isinstance(data["extracted_data"], dict):
         res["extracted_data"] = data["extracted_data"]
+    if "override_rejection" in data:
+        res["override_rejection"] = bool(data["override_rejection"])
+    if "final_decision" in data:
+        res["final_decision"] = str(data["final_decision"])
+    if "reasoning" in data:
+        res["reasoning"] = str(data["reasoning"])
     return res
 
 
 def _parse_agent_json(text: str) -> dict:
     """
     Extracts and parses the final JSON evaluation block from the model's output.
-    Expects {"passed": boolean, "feedback": "string", optional "extracted_data": {...}}.
     """
     text = text.strip()
 
     # 1. Try directly parsing the full text
     try:
         data = json.loads(text)
-        if isinstance(data, dict) and "passed" in data:
+        if isinstance(data, dict):
             return _format_result(data)
     except Exception:
         pass
@@ -52,7 +59,7 @@ def _parse_agent_json(text: str) -> dict:
         for block in reversed(code_blocks):
             try:
                 data = json.loads(block)
-                if isinstance(data, dict) and "passed" in data:
+                if isinstance(data, dict):
                     return _format_result(data)
             except Exception:
                 continue
@@ -74,12 +81,12 @@ def _parse_agent_json(text: str) -> dict:
             candidate = text[start_idx : last_brace + 1]
             try:
                 data = json.loads(candidate)
-                if isinstance(data, dict) and "passed" in data:
+                if isinstance(data, dict):
                     return _format_result(data)
             except Exception:
                 pass
 
-    raise ValueError("Could not extract a valid JSON object with 'passed' and 'feedback' keys")
+    raise ValueError("Could not extract a valid JSON object from model response")
 
 
 async def evaluate_multimodal_submission(
@@ -88,22 +95,11 @@ async def evaluate_multimodal_submission(
     bounty_id: int,
     milestone_id: int | None = None,
     milestone_description: str | None = None,
+    milestone_deadline: str | None = None,
 ) -> dict:
     """
-    Uses Google Gemini 1.5 Pro to evaluate physical-world proof of work and financial receipts.
-    Extracts receipt total, date, and items, and verifies whether they logically fulfill
-    the milestone criteria.
-
-    Args:
-        files: List of (file_bytes, mime_type, filename) tuples.
-        acceptance_criteria: Overall bounty acceptance criteria.
-        bounty_id: The bounty ID.
-        milestone_id: Optional milestone ID.
-        milestone_description: Scope and requirements for the specific milestone.
-
-    Returns:
-        Structured dictionary with format:
-        {"passed": bool, "feedback": str, "extracted_data": {...}}
+    Uses Pillow for EXIF timeline forensic verification and Google Gemini 1.5 Pro to audit
+    receipts/proof documents, extracting totals, dates, items, and cross-referencing criteria.
     """
     from google import genai
     from google.genai import types
@@ -114,7 +110,25 @@ async def evaluate_multimodal_submission(
 
     client = genai.Client(api_key=api_key)
 
-    # Build Gemini multimodal Part objects
+    # 1. Forensic EXIF Metadata Inspection via Pillow
+    exif_findings = []
+    primary_exif_info = None
+
+    for idx, (fbytes, fmime, fname) in enumerate(files):
+        # Only inspect image types for EXIF
+        if not fname.lower().endswith(".pdf") and not (fmime and "pdf" in fmime.lower()):
+            exif_res = extract_and_verify_exif(fbytes, deadline_str=milestone_deadline)
+            if not primary_exif_info and exif_res["has_exif"]:
+                primary_exif_info = exif_res
+
+            exif_findings.append(
+                f"- File '{fname}': {exif_res['timeline_feedback']} "
+                f"(Camera: {exif_res.get('camera_make') or 'Unknown'} {exif_res.get('camera_model') or ''})"
+            )
+
+    exif_context = "\n".join(exif_findings) if exif_findings else "No EXIF-compatible images found (PDF or digital documents)."
+
+    # 2. Build Gemini multimodal Part objects
     parts = []
     for file_bytes, mime_type, fname in files:
         clean_mime = (mime_type or "").lower().strip()
@@ -133,27 +147,32 @@ async def evaluate_multimodal_submission(
         part = types.Part.from_bytes(data=file_bytes, mime_type=clean_mime)
         parts.append(part)
 
-    # Formulate auditing prompt specifically for financial receipts & physical proof
+    # 3. Formulate the comprehensive Gemini 1.5 Pro multimodal prompt
     prompt = f"""You are an autonomous auditor evaluating physical-world proof of work and financial receipts (such as NGO donations, humanitarian supplies, charity purchases, or on-the-ground service receipts) for milestone escrow release.
 
 Bounty ID: #{bounty_id}
 Milestone ID: #{milestone_id or 'General'}
+Milestone Deadline: {milestone_deadline or 'Open / Not specified'}
 Milestone Scope & Required Deliverable:
 {milestone_description or 'Verify receipt and proof of work fulfills milestone requirements.'}
 
 Overall Acceptance Criteria:
 {acceptance_criteria}
 
+Pillow EXIF Metadata Forensic Analysis:
+{exif_context}
+
 Instructions:
-1. Examine the provided receipt(s), document(s), or photo evidence carefully.
+1. Examine the attached receipt image(s) or PDF document(s) alongside the Pillow EXIF metadata.
 2. Extract the key financial and transactional fields:
    - Receipt / Transaction Total Amount (numerical value and currency)
    - Date of transaction or receipt
    - Itemized list of purchased items, services, or donation activities
    - Vendor / Merchant / Recipient Organization name
-3. Cross-reference the extracted receipt items, total amount, and date against the milestone scope and acceptance criteria:
+3. Cross-reference the extracted receipt items, total amount, and date against the milestone scope, acceptance criteria, and EXIF timeline:
    - Does the receipt demonstrate valid proof of work for this milestone?
    - Do the items and total amount reasonably satisfy the milestone requirement?
+   - Does the receipt date or photo creation date align with the milestone timeline? If there is a major timeline anomaly flagged in the EXIF metadata, factor that into your judgment.
 4. Output your final response strictly as a raw JSON block at the very end in the exact format:
 {{
   "passed": boolean,
@@ -188,7 +207,113 @@ Ensure that "passed" is a boolean (true or false). Do not include any text outsi
 
     response_text = response.text or ""
     print(f"[QA Agent] Received Gemini response ({len(response_text)} chars). Parsing evaluation result...")
-    return _parse_agent_json(response_text)
+    result = _parse_agent_json(response_text)
+
+    # Attach EXIF summary to extracted data if present
+    if primary_exif_info and "extracted_data" in result and isinstance(result["extracted_data"], dict):
+        result["extracted_data"]["exif_photo_date"] = primary_exif_info.get("photo_date")
+        result["extracted_data"]["exif_timeline_aligned"] = primary_exif_info.get("is_aligned")
+        result["extracted_data"]["exif_timeline_feedback"] = primary_exif_info.get("timeline_feedback")
+
+    return result
+
+
+async def mediate_dispute(
+    bounty_id: int,
+    milestone_id: int,
+    milestone_criteria: str,
+    rejection_reason: str,
+    appeal_text: str,
+    bounty_title: str | None = None,
+    milestone_amount: float | None = None,
+    extra_evidence: str | None = None,
+) -> dict:
+    """
+    Mediator AI:
+    Takes the original milestone criteria, the failed AI evaluation reason, and the user's
+    appeal explanation to make a final, definitive decision on whether to override the rejection
+    and release the funds.
+
+    Returns:
+        dict: {"override_rejection": bool, "final_decision": "OVERRIDE_REJECTION" | "UPHOLD_REJECTION", "reasoning": str}
+    """
+    from google import genai
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in environment variables.")
+
+    client = genai.Client(api_key=api_key)
+
+    mediator_prompt = f"""You are the Chief Escrow Dispute Mediator AI, a fair, neutral, and authoritative arbitrator for milestone escrow release disputes on MilestoneEscrow.
+
+A freelancer / contributor's milestone submission was REJECTED by the automated auditor. The user has submitted a formal appeal requesting an override.
+You must impartially evaluate the criteria, the rejection reason, and the user's defense, then render a FINAL, DEFINITIVE, AND BINDING DECISION.
+
+=== DISPUTE CASE FILE ===
+Bounty ID: #{bounty_id}
+Milestone ID: #{milestone_id}
+Bounty Title: {bounty_title or 'N/A'}
+Milestone Value: ${milestone_amount or 0.0:.2f} USD
+
+Original Milestone Criteria:
+\"\"\"{milestone_criteria}\"\"\"
+
+Automated Auditor Rejection Reason:
+\"\"\"{rejection_reason}\"\"\"
+
+User's Formal Appeal Explanation:
+\"\"\"{appeal_text}\"\"\"
+
+{f"Additional Context / Evidence: {extra_evidence}" if extra_evidence else ""}
+
+=== ARBITRATION INSTRUCTIONS ===
+1. Critically evaluate whether the automated rejection was reasonable or excessively rigid/erroneous.
+2. Evaluate the user's appeal explanation:
+   - Does the user provide a credible, verifiable explanation for discrepancies (e.g. currency conversion, vendor receipt naming, minor scope adjustments, delivery logistics)?
+   - Did the user substantially deliver the core objective of this milestone?
+   - Or is the appeal deceptive, insubstantial, or evading mandatory requirements?
+3. Deliver a definitive decision:
+   - "OVERRIDE_REJECTION": The appeal is granted. Overturn the rejection and immediately disburse the milestone escrow funds to the user.
+   - "UPHOLD_REJECTION": The appeal is denied. The rejection is justified and funds remain held in escrow.
+4. Output your decision strictly as a raw JSON block at the very end with this exact structure:
+{{
+  "override_rejection": boolean,
+  "final_decision": "OVERRIDE_REJECTION" or "UPHOLD_REJECTION",
+  "reasoning": "Comprehensive legalistic and impartial justification explaining the exact grounds for granting or denying the appeal."
+}}
+
+Notice:
+- "override_rejection" MUST be true if you are approving and releasing funds, false if upholding the rejection.
+- Do not output any markdown or commentary outside the JSON block.
+"""
+
+    model_name = os.getenv("GEMINI_MEDIATOR_MODEL", "gemini-1.5-pro")
+    print(f"[Mediator AI] Arbitrating dispute for Bounty #{bounty_id}, Milestone #{milestone_id} using {model_name}...")
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=mediator_prompt,
+        )
+    except Exception as err:
+        print(f"[Mediator AI Notice] Primary model ({model_name}) error: {err}. Trying fallback model...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=mediator_prompt,
+        )
+
+    response_text = response.text or ""
+    print(f"[Mediator AI] Arbitration ruling received ({len(response_text)} chars). Parsing decision...")
+    parsed = _parse_agent_json(response_text)
+
+    # Standardize result
+    override = bool(parsed.get("override_rejection", False))
+    return {
+        "override_rejection": override,
+        "final_decision": "OVERRIDE_REJECTION" if override else "UPHOLD_REJECTION",
+        "reasoning": str(parsed.get("reasoning") or parsed.get("feedback") or "Arbitration ruling finalized."),
+    }
 
 
 async def evaluate_submission(
@@ -198,10 +323,11 @@ async def evaluate_submission(
     bounty_id: int = 0,
     milestone_id: int | None = None,
     milestone_description: str | None = None,
+    milestone_deadline: str | None = None,
 ) -> dict:
     """
     Main evaluation entry point:
-    - If uploaded files (receipts/photos/PDFs) are provided, triggers Gemini 1.5 Pro multimodal evaluation.
+    - If uploaded files (receipts/photos/PDFs) are provided, triggers Gemini 1.5 Pro multimodal evaluation with Pillow EXIF inspection.
     - If a GitHub URL is provided, runs code repository cloning and test suite audit.
     """
     # 1. Multimodal File Submission (Receipts / Proof of work)
@@ -212,6 +338,7 @@ async def evaluate_submission(
             bounty_id=bounty_id,
             milestone_id=milestone_id,
             milestone_description=milestone_description,
+            milestone_deadline=milestone_deadline,
         )
 
     # 2. GitHub URL Repository Submission
