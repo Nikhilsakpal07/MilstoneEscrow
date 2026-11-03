@@ -13,7 +13,10 @@ if gemini_key:
     os.environ["GEMINI_API_KEY"] = gemini_key
 
 # pyrefly: ignore[missing-import]
-from google.antigravity import Agent, LocalAgentConfig, CapabilitiesConfig
+try:
+    from google.antigravity import Agent, LocalAgentConfig, CapabilitiesConfig
+except ImportError:
+    Agent = LocalAgentConfig = CapabilitiesConfig = None
 try:
     from google.antigravity.hooks import policy
 except ImportError:
@@ -23,7 +26,7 @@ except ImportError:
 def _parse_agent_json(text: str) -> dict:
     """
     Extracts and parses the final JSON evaluation block from the agent's output.
-    Expects {"passed": boolean, "feedback": "string"}.
+    Expects {"passed": boolean, "allow_revision": boolean, "feedback": "string"}.
     """
     text = text.strip()
 
@@ -31,7 +34,11 @@ def _parse_agent_json(text: str) -> dict:
     try:
         data = json.loads(text)
         if isinstance(data, dict) and "passed" in data and "feedback" in data:
-            return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+            return {
+                "passed": bool(data["passed"]),
+                "allow_revision": bool(data.get("allow_revision", False)),
+                "feedback": str(data["feedback"]),
+            }
     except Exception:
         pass
 
@@ -42,7 +49,11 @@ def _parse_agent_json(text: str) -> dict:
             try:
                 data = json.loads(block)
                 if isinstance(data, dict) and "passed" in data and "feedback" in data:
-                    return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+                    return {
+                        "passed": bool(data["passed"]),
+                        "allow_revision": bool(data.get("allow_revision", False)),
+                        "feedback": str(data["feedback"]),
+                    }
             except Exception:
                 continue
 
@@ -56,15 +67,19 @@ def _parse_agent_json(text: str) -> dict:
                 depth += 1
             elif text[i] == "{":
                 depth -= 1
-                if depth == 0:
-                    start_idx = i
-                    break
+            if depth == 0:
+                start_idx = i
+                break
         if start_idx != -1:
             candidate = text[start_idx : last_brace + 1]
             try:
                 data = json.loads(candidate)
                 if isinstance(data, dict) and "passed" in data and "feedback" in data:
-                    return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+                    return {
+                        "passed": bool(data["passed"]),
+                        "allow_revision": bool(data.get("allow_revision", False)),
+                        "feedback": str(data["feedback"]),
+                    }
             except Exception:
                 pass
 
@@ -81,7 +96,7 @@ async def evaluate_submission(github_url: str, acceptance_criteria: str, bounty_
         bounty_id: The ID of the bounty being evaluated.
 
     Returns:
-        A dictionary with format: {"passed": bool, "feedback": str}
+        A dictionary with format: {"passed": bool, "allow_revision": bool, "feedback": str}
     """
     # 1. Define workspace and trajectory directories based on bounty_id
     workspace_dir = os.path.abspath(f"./workspaces/bounty_{bounty_id}")
@@ -140,9 +155,12 @@ Instructions:
 3. Run the test suite (e.g., `pytest`, `npm test`, `unittest`, or project-specific test runners).
 4. Evaluate the test output and codebase strictly against the provided acceptance criteria.
 5. Output a raw JSON block at the very end of your response in the exact format:
-{{"passed": boolean, "feedback": "string"}}
+{{"passed": boolean, "allow_revision": boolean, "feedback": "string"}}
 
-Ensure that "passed" is a boolean (true or false) indicating whether all tests and acceptance criteria were satisfied, and "feedback" is a clear summary of the evaluation results.
+Ensure that:
+- "passed" is a boolean (true or false) indicating whether all tests and acceptance criteria were satisfied.
+- "allow_revision" is a boolean indicating whether minor defects can be rectified in a revision grace period (true) or if this is a complete failure (false).
+- "feedback" is a clear summary of the evaluation results.
 """
 
     # 5. Execute agent with Gemini model
@@ -191,11 +209,9 @@ Ensure that "passed" is a boolean (true or false) indicating whether all tests a
     except Exception as primary_err:
         print(f"[QA Agent Notice] Antigravity local harness error: {primary_err}. Attempting direct Gemini API evaluation fallback...")
 
-        # Fallback to direct Gemini Model API via google.genai
         try:
             from google import genai
 
-            # Clone or fetch repository
             clone_target = os.path.join(workspace_dir, "repo")
             if not os.path.exists(clone_target):
                 subprocess.run(
@@ -206,7 +222,6 @@ Ensure that "passed" is a boolean (true or false) indicating whether all tests a
                     timeout=60,
                 )
 
-            # Inspect repo files
             file_snippets = []
             scan_dir = clone_target if os.path.exists(clone_target) else workspace_dir
             for root, dirs, files in os.walk(scan_dir):
@@ -237,7 +252,7 @@ Instructions:
 1. Examine the repository files against the acceptance criteria.
 2. Determine if the criteria are fully satisfied.
 3. At the very end of your response, output a raw JSON block in the exact format:
-{{"passed": boolean, "feedback": "string"}}
+{{"passed": boolean, "allow_revision": boolean, "feedback": "string"}}
 """
 
             client = genai.Client(api_key=api_key)
@@ -256,5 +271,6 @@ Instructions:
 
         return {
             "passed": False,
+            "allow_revision": False,
             "feedback": f"Gemini QA evaluation failed: {str(primary_err)}. Raw output: {response_text.strip()}",
         }
