@@ -18,6 +18,11 @@ class Bounty(Base):
     freelancer_phone = Column(String, nullable=True, index=True)  # WhatsApp Field-Worker Integration
     tracking_number = Column(String, nullable=True, index=True)  # External Data Oracle (Logistics)
     shipping_status = Column(String, default="NOT_SHIPPED")  # NOT_SHIPPED, SHIPPED, IN_TRANSIT, DELIVERED
+    # Predictive Risk Scoring
+    risk_score = Column(String, default="LOW")  # LOW, MEDIUM, HIGH
+    risk_factors = Column(JSON, default=list)
+    risk_percentage = Column(Integer, default=15)
+    risk_updated_at = Column(String, nullable=True)
 
     escrow = relationship("Escrow", back_populates="bounty", uselist=False)
     audit_logs = relationship("AuditLog", back_populates="bounty")
@@ -39,9 +44,27 @@ class Milestone(Base):
     requires_human_approval = Column(Boolean, default=False)  # Hybrid Multi-Sig (> $5,000)
     tracking_number = Column(String, nullable=True, index=True)  # Logistics tracking number
     shipping_status = Column(String, default="NOT_SHIPPED")  # NOT_SHIPPED, SHIPPED, IN_TRANSIT, DELIVERED
+    # Automated Compliance Certificate (PDF)
+    certificate_id = Column(String, nullable=True, index=True)
+    certificate_pdf_path = Column(String, nullable=True)
 
     bounty = relationship("Bounty", back_populates="milestones")
     audit_logs = relationship("AuditLog", back_populates="milestone")
+
+
+class CodeFingerprint(Base):
+    __tablename__ = "code_fingerprints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    freelancer_email = Column(String, index=True)
+    bounty_id = Column(Integer, ForeignKey("bounties.id"))
+    milestone_id = Column(Integer, nullable=True)
+    github_url = Column(String, nullable=True)
+    ast_hash = Column(String, index=True)
+    naming_style = Column(JSON, default=dict)
+    identifiers = Column(JSON, default=list)
+    code_summary = Column(Text, nullable=True)
+    created_at = Column(String)
 
 
 class Escrow(Base):

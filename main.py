@@ -1,10 +1,11 @@
 import os
 import asyncio
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI, Depends, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -26,6 +27,9 @@ from qa_agent import (
     generate_conversational_escrow,
     negotiate_scope_compromise,
 )
+from certificate_generator import generate_escrow_certificate_pdf
+from stylometric_fingerprint import evaluate_sybil_stylometric_fingerprint
+from predictive_risk import evaluate_bounty_predictive_risk, evaluate_all_active_bounties_risk
 
 # Ensure database tables and newly added columns exist
 models.Base.metadata.create_all(bind=engine)
@@ -36,11 +40,17 @@ try:
         conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS freelancer_phone VARCHAR;"))
         conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS tracking_number VARCHAR;"))
         conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS shipping_status VARCHAR DEFAULT 'NOT_SHIPPED';"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS risk_score VARCHAR DEFAULT 'LOW';"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS risk_factors JSON DEFAULT '[]'::json;"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS risk_percentage INTEGER DEFAULT 15;"))
+        conn.execute(text("ALTER TABLE bounties ADD COLUMN IF NOT EXISTS risk_updated_at VARCHAR;"))
         conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS milestone_id INTEGER;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS authorization_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS requires_human_approval BOOLEAN DEFAULT FALSE;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS tracking_number VARCHAR;"))
         conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS shipping_status VARCHAR DEFAULT 'NOT_SHIPPED';"))
+        conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS certificate_id VARCHAR;"))
+        conn.execute(text("ALTER TABLE milestones ADD COLUMN IF NOT EXISTS certificate_pdf_path VARCHAR;"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_order_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_authorization_ids JSON DEFAULT '[]'::json;"))
         conn.execute(text("ALTER TABLE escrows ADD COLUMN IF NOT EXISTS paypal_capture_ids JSON DEFAULT '[]'::json;"))
@@ -126,6 +136,63 @@ def get_mock_shipping_info(tracking_number: str) -> dict:
         "notes": notes_val,
         "updated_at": "2026-11-03T12:00:00Z",
     }
+
+
+def generate_and_attach_certificate(
+    bounty: models.Bounty,
+    milestone: models.Milestone,
+    db: Session,
+    reasoning: dict | str | None = None,
+    batch_id: str | None = None,
+) -> str | None:
+    """
+    Generates an official 'Escrow Verification Certificate' PDF using ReportLab
+    and attaches the certificate ID and PDF path to the completed milestone.
+    """
+    try:
+        tx_id = batch_id or milestone.paypal_payout_batch_id or "PAYPAL-AUTH-POOL-SETTLED"
+        gemini_reasoning_data = reasoning
+        if not gemini_reasoning_data:
+            audit = (
+                db.query(models.AuditLog)
+                .filter(models.AuditLog.milestone_id == milestone.id)
+                .order_by(models.AuditLog.id.desc())
+                .first()
+            )
+            if audit and audit.ai_feedback:
+                gemini_reasoning_data = {
+                    "audit_verdict": "PASSED" if audit.passed else "VERIFIED",
+                    "feedback": audit.ai_feedback,
+                    "trajectory_id": audit.trajectory_id,
+                }
+            else:
+                gemini_reasoning_data = {
+                    "audit_verdict": "PASSED",
+                    "approval": "Milestone verified and payout authorized under Escrow protocol.",
+                }
+
+        pdf_path, _ = generate_escrow_certificate_pdf(
+            bounty_id=bounty.id,
+            milestone_id=milestone.id,
+            bounty_title=bounty.title,
+            milestone_description=milestone.description,
+            freelancer_email=bounty.freelancer_email,
+            amount_usd=float(milestone.amount_usd),
+            remaining_escrow_usd=float(bounty.remaining_amount_usd if bounty.remaining_amount_usd is not None else 0.0),
+            paypal_transaction_id=tx_id,
+            gemini_reasoning=gemini_reasoning_data,
+        )
+        milestone.certificate_pdf_path = pdf_path
+        cert_filename = os.path.basename(pdf_path)
+        cert_id = cert_filename.replace(".pdf", "").split("_")[-1]
+        milestone.certificate_id = cert_id
+        db.add(milestone)
+        db.commit()
+        logger.info("[Compliance Engine] Generated Escrow Certificate for Milestone #%d: %s", milestone.id, cert_id)
+        return pdf_path
+    except Exception as e:
+        logger.error("[Compliance Engine] Error generating certificate for Milestone #%d: %s", milestone.id, e)
+        return None
 
 
 def process_oracle_deliveries(db: Session) -> list[dict]:
@@ -230,6 +297,22 @@ def process_oracle_deliveries(db: Session) -> list[dict]:
                 else:
                     bounty.status = "IN_PROGRESS"
 
+                # Automated Compliance: Generate Escrow Verification Certificate PDF
+                generate_and_attach_certificate(
+                    bounty=bounty,
+                    milestone=m,
+                    db=db,
+                    reasoning={
+                        "oracle": "Logistics Carrier API",
+                        "status": "DELIVERED",
+                        "carrier": info.get("carrier"),
+                        "tracking_number": trk,
+                        "signed_by": info.get("signed_by"),
+                        "notes": info.get("notes"),
+                    },
+                    batch_id=batch_id,
+                )
+
                 audit_log = models.AuditLog(
                     bounty_id=bounty.id,
                     milestone_id=m.id,
@@ -276,19 +359,39 @@ async def oracle_background_poll_worker():
             logger.warning("[Logistics Oracle Background Task Exception]: %s", e)
 
 
+async def predictive_risk_background_worker():
+    """Background task that periodically calculates predictive risk scores across active bounties."""
+    await asyncio.sleep(5)
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                evaluate_all_active_bounties_risk(db)
+            finally:
+                db.close()
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("[Predictive Risk Background Task Exception]: %s", e)
+            await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: spawn background oracle polling task
-    worker_task = asyncio.create_task(oracle_background_poll_worker())
-    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller started.")
+    # Startup: spawn background oracle polling task and predictive risk scorer
+    oracle_task = asyncio.create_task(oracle_background_poll_worker())
+    risk_task = asyncio.create_task(predictive_risk_background_worker())
+    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller & Predictive Risk Scorer started.")
     yield
     # Shutdown
-    worker_task.cancel()
+    oracle_task.cancel()
+    risk_task.cancel()
     try:
-        await worker_task
-    except asyncio.CancelledError:
+        await asyncio.gather(oracle_task, risk_task, return_exceptions=True)
+    except Exception:
         pass
-    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller stopped.")
+    logger.info("[MilestoneEscrow] Background Logistics Oracle Poller & Predictive Risk Scorer stopped.")
 
 
 app = FastAPI(title="MilestoneEscrow API", lifespan=lifespan)
@@ -406,6 +509,10 @@ def list_bounties(db: Session = Depends(get_db)):
             "tracking_number": b.tracking_number,
             "shipping_status": b.shipping_status or "NOT_SHIPPED",
             "status": b.status,
+            "risk_score": b.risk_score or "LOW",
+            "risk_percentage": b.risk_percentage if b.risk_percentage is not None else 15,
+            "risk_factors": b.risk_factors or [],
+            "risk_updated_at": b.risk_updated_at,
             "requires_human_approval": bool(b.requires_human_approval or (b.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
             "is_high_value": (b.amount_usd or 0) > HIGH_VALUE_THRESHOLD,
             "milestones": [
@@ -421,6 +528,9 @@ def list_bounties(db: Session = Depends(get_db)):
                     "tracking_number": m.tracking_number or b.tracking_number,
                     "shipping_status": m.shipping_status or b.shipping_status or "NOT_SHIPPED",
                     "paypal_payout_batch_id": m.paypal_payout_batch_id,
+                    "certificate_id": m.certificate_id,
+                    "certificate_pdf_path": m.certificate_pdf_path,
+                    "has_certificate": bool(m.certificate_pdf_path and os.path.exists(m.certificate_pdf_path)),
                 }
                 for m in (b.milestones or [])
             ],
@@ -455,6 +565,10 @@ def get_bounty(bounty_id: int, db: Session = Depends(get_db)):
         "tracking_number": bounty.tracking_number,
         "shipping_status": bounty.shipping_status or "NOT_SHIPPED",
         "status": bounty.status,
+        "risk_score": bounty.risk_score or "LOW",
+        "risk_percentage": bounty.risk_percentage if bounty.risk_percentage is not None else 15,
+        "risk_factors": bounty.risk_factors or [],
+        "risk_updated_at": bounty.risk_updated_at,
         "requires_human_approval": bool(bounty.requires_human_approval or (bounty.amount_usd or 0) > HIGH_VALUE_THRESHOLD),
         "is_high_value": (bounty.amount_usd or 0) > HIGH_VALUE_THRESHOLD,
         "escrow": {
@@ -478,6 +592,9 @@ def get_bounty(bounty_id: int, db: Session = Depends(get_db)):
                 "tracking_number": m.tracking_number or bounty.tracking_number,
                 "shipping_status": m.shipping_status or bounty.shipping_status or "NOT_SHIPPED",
                 "paypal_payout_batch_id": m.paypal_payout_batch_id,
+                "certificate_id": m.certificate_id,
+                "certificate_pdf_path": m.certificate_pdf_path,
+                "has_certificate": bool(m.certificate_pdf_path and os.path.exists(m.certificate_pdf_path)),
             }
             for m in (bounty.milestones or [])
         ],
@@ -703,6 +820,56 @@ async def submit_work(
     # Fetch associated Escrow
     escrow = bounty.escrow or db.query(models.Escrow).filter(models.Escrow.bounty_id == bounty_id).first()
 
+    # AI Stylometric Fingerprinting (Sybil Attack Detection)
+    # If submitting a GitHub repository, evaluate AST and variable naming styles against previous submissions
+    if github_url:
+        sybil_check = evaluate_sybil_stylometric_fingerprint(
+            db=db,
+            github_url=github_url,
+            freelancer_email=bounty.freelancer_email,
+            bounty_id=bounty.id,
+            milestone_id=milestone.id,
+        )
+        if sybil_check.get("is_sybil_match"):
+            milestone.status = "fraud_review_pending"
+            bounty.status = "fraud_review_pending"
+            evidence = sybil_check.get("stylistic_evidence", "Exact AST structure and identifier collision detected across accounts.")
+            matched_acc = sybil_check.get("matched_account", "Historical Account")
+            confidence = sybil_check.get("confidence_score", 0.95)
+
+            fraud_feedback = (
+                f"[AI STYLOMETRIC SECURITY ALERT - SYBIL ATTACK DETECTED]: "
+                f"Stylometric AST and naming analysis detected an unauthorized multi-account Sybil collision. "
+                f"Matched with account '{matched_acc}' (Confidence: {confidence:.0%}). "
+                f"Evidence: {evidence}. "
+                f"Milestone status set to 'fraud_review_pending' and escrow payout is blocked pending human compliance audit."
+            )
+            audit_log = models.AuditLog(
+                bounty_id=bounty.id,
+                milestone_id=milestone.id,
+                trajectory_id=f"sybil_fraud_m_{milestone.id}",
+                passed=False,
+                ai_feedback=fraud_feedback,
+            )
+            db.add(audit_log)
+            db.commit()
+            db.refresh(bounty)
+            db.refresh(milestone)
+
+            return {
+                "status": "fraud_review_pending",
+                "milestone_id": milestone.id,
+                "milestone_description": milestone.description,
+                "milestone_status": "fraud_review_pending",
+                "milestone_amount_paid": 0.0,
+                "remaining_amount_usd": bounty.remaining_amount_usd,
+                "feedback": fraud_feedback,
+                "passed": False,
+                "sybil_detected": True,
+                "fraud_review_pending": True,
+                "extracted_data": None,
+            }
+
     # Update state to AUDITING
     milestone.status = "AUDITING"
     bounty.status = "AUDITING"
@@ -815,6 +982,20 @@ async def submit_work(
         else:
             bounty.status = "IN_PROGRESS"
 
+        # Automated Compliance: Generate Escrow Verification Certificate PDF
+        cert_path = generate_and_attach_certificate(
+            bounty=bounty,
+            milestone=milestone,
+            db=db,
+            reasoning={
+                "audit_verdict": "PASSED",
+                "feedback": feedback,
+                "extracted_data": extracted_data,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+            batch_id=batch_id,
+        )
+
     else:
         milestone.status = "REJECTED"
         bounty.status = "IN_PROGRESS"
@@ -833,6 +1014,8 @@ async def submit_work(
         "feedback": feedback,
         "passed": passed,
         "extracted_data": extracted_data,
+        "certificate_id": milestone.certificate_id,
+        "certificate_url": f"/api/milestones/{milestone.id}/certificate" if milestone.certificate_id else None,
     }
 
 
@@ -967,6 +1150,19 @@ async def appeal_rejection(
                 bounty.status = "COMPLETED"
             else:
                 bounty.status = "IN_PROGRESS"
+
+            # Automated Compliance: Generate Escrow Verification Certificate PDF
+            generate_and_attach_certificate(
+                bounty=bounty,
+                milestone=milestone,
+                db=db,
+                reasoning={
+                    "mediator_verdict": "OVERRIDE_APPROVED",
+                    "reasoning": mediation_result.get("reasoning"),
+                    "appeal_text": appeal_in.appeal_text,
+                },
+                batch_id=batch_id,
+            )
 
             audit_log = models.AuditLog(
                 bounty_id=bounty.id,
@@ -1137,6 +1333,20 @@ def admin_final_approve(
         ai_feedback=f"[ADMIN MULTI-SIG FINAL APPROVAL]: {admin_note}. Released ${payout_amount:,.2f} USD via PayPal Payouts.",
     )
     db.add(audit_log)
+
+    # Automated Compliance: Generate Escrow Verification Certificate PDF
+    generate_and_attach_certificate(
+        bounty=bounty,
+        milestone=milestone,
+        db=db,
+        reasoning={
+            "admin_verdict": "HUMAN_MULTI_SIG_CO_SIGNED",
+            "admin_notes": admin_note,
+            "bounty_total": bounty.amount_usd,
+            "milestone_disbursed": payout_amount,
+        },
+        batch_id=batch_id,
+    )
 
     db.commit()
     db.refresh(bounty)
@@ -1640,6 +1850,21 @@ async def twilio_whatsapp_webhook(
             else:
                 matched_bounty.status = "IN_PROGRESS"
 
+            # Automated Compliance: Generate Escrow Verification Certificate PDF
+            generate_and_attach_certificate(
+                bounty=matched_bounty,
+                milestone=milestone,
+                db=db,
+                reasoning={
+                    "channel": "WHATSAPP",
+                    "verdict": "APPROVED",
+                    "feedback": feedback,
+                    "extracted_data": extracted_data,
+                    "sender_phone": sender_phone,
+                },
+                batch_id=batch_id,
+            )
+
             db.commit()
 
             twiml.message(
@@ -1793,3 +2018,97 @@ def mark_milestone_shipped(
         "shipping_status": milestone.shipping_status,
         "oracle_auto_processed": processed,
     }
+
+
+# =====================================================================
+# AUTOMATED COMPLIANCE & ESCROW VERIFICATION CERTIFICATE (PDF)
+# =====================================================================
+
+@app.get("/api/milestones/{milestone_id}/certificate")
+@app.get("/api/bounties/{bounty_id}/milestones/{milestone_id}/certificate")
+def download_escrow_certificate(
+    milestone_id: int,
+    bounty_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Downloads the official 'Escrow Verification Certificate' PDF for a completed milestone.
+    If the PDF file has not yet been generated on disk, creates it on-the-fly and serves it.
+    """
+    milestone = db.query(models.Milestone).filter(models.Milestone.id == milestone_id).first()
+    if not milestone:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Milestone with ID {milestone_id} not found.",
+        )
+
+    bounty = milestone.bounty
+    if not bounty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bounty for milestone {milestone_id} not found.",
+        )
+
+    # Check if certificate PDF file exists on disk
+    if milestone.certificate_pdf_path and os.path.exists(milestone.certificate_pdf_path):
+        filename = os.path.basename(milestone.certificate_pdf_path)
+        return FileResponse(
+            path=milestone.certificate_pdf_path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+
+    # If milestone is completed or settled, generate certificate on demand
+    if milestone.status in ("COMPLETED", "SETTLED"):
+        pdf_path = generate_and_attach_certificate(
+            bounty=bounty,
+            milestone=milestone,
+            db=db,
+        )
+        if pdf_path and os.path.exists(pdf_path):
+            filename = os.path.basename(pdf_path)
+            return FileResponse(
+                path=pdf_path,
+                media_type="application/pdf",
+                filename=filename,
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Certificate not available yet. Milestone status is '{milestone.status}', awaiting completion and settlement.",
+    )
+
+
+# =====================================================================
+# PREDICTIVE RISK SCORING & ANALYTICS
+# =====================================================================
+
+@app.post("/api/analytics/predictive-risk/evaluate")
+def run_predictive_risk_evaluation(db: Session = Depends(get_db)):
+    """
+    Triggers the Google Gemini Predictive Risk Analytics Engine across all active bounties.
+    Assigns Risk Scores (LOW, MEDIUM, HIGH), risk percentages, and risk factors.
+    """
+    evaluations = evaluate_all_active_bounties_risk(db)
+    return {
+        "status": "success",
+        "evaluated_count": len(evaluations),
+        "evaluations": evaluations,
+    }
+
+
+@app.get("/api/bounties/{bounty_id}/risk")
+def get_bounty_predictive_risk(bounty_id: int, db: Session = Depends(get_db)):
+    """
+    Evaluates or returns the Predictive Risk Score for a specific bounty.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bounty with ID {bounty_id} not found.",
+        )
+
+    risk_result = evaluate_bounty_predictive_risk(bounty, db)
+    return risk_result
+

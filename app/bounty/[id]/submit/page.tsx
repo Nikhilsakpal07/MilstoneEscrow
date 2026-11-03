@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import PredictiveRiskBadge from "@/components/PredictiveRiskBadge";
 
 interface Milestone {
   id: number;
@@ -14,6 +15,8 @@ interface Milestone {
   paypal_payout_batch_id?: string;
   tracking_number?: string;
   shipping_status?: string;
+  certificate_id?: string;
+  has_certificate?: boolean;
 }
 
 interface BountyDetail {
@@ -26,6 +29,9 @@ interface BountyDetail {
   freelancer_phone?: string;
   tracking_number?: string;
   shipping_status?: string;
+  risk_score?: string;
+  risk_percentage?: number;
+  risk_factors?: string[];
   status: string;
   milestones: Milestone[];
 }
@@ -61,6 +67,8 @@ interface EvaluationResult {
   passed: boolean;
   feedback: string;
   extracted_data?: ExtractedReceiptData;
+  is_sybil_match?: boolean;
+  matched_account?: string;
 }
 
 interface AppealResult {
@@ -536,7 +544,15 @@ export default function SubmitWorkPage() {
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-4">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900">{bounty.title}</h2>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h2 className="text-lg font-bold text-slate-900">{bounty.title}</h2>
+                    <PredictiveRiskBadge
+                      riskScore={bounty.risk_score}
+                      riskPercentage={bounty.risk_percentage}
+                      riskFactors={bounty.risk_factors}
+                      compact
+                    />
+                  </div>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Beneficiary / Freelancer:{" "}
                     <span className="font-mono font-medium text-slate-700">
@@ -882,7 +898,18 @@ export default function SubmitWorkPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3 self-end sm:self-auto">
+                        <div className="flex items-center gap-2.5 self-end sm:self-auto">
+                          {isCompleted && (
+                            <a
+                              href={`http://localhost:8000/api/milestones/${m.id}/certificate`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 rounded-lg text-xs font-bold border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition-colors flex items-center gap-1 shadow-xs"
+                              title="Download Escrow Verification Certificate (PDF)"
+                            >
+                              <span>📄 Certificate</span>
+                            </a>
+                          )}
                           <span className="font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
                             ${m.amount_usd.toFixed(2)} USD
                           </span>
@@ -1420,12 +1447,34 @@ export default function SubmitWorkPage() {
                     </div>
                   </div>
                 ) : result.passed ? (
-                  <div className="p-3 bg-white/80 rounded-xl border border-emerald-200 text-xs text-emerald-800 space-y-1">
-                    <p className="font-semibold">
-                      &check; PayPal Payout of ${result.milestone_amount_paid.toFixed(2)} USD was successfully sent to the beneficiary!
-                    </p>
+                  <div className="p-4 bg-white/90 rounded-xl border border-emerald-200 text-xs text-emerald-800 space-y-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <p className="font-semibold text-emerald-900">
+                        &check; PayPal Payout of ${result.milestone_amount_paid.toFixed(2)} USD was successfully sent to the beneficiary!
+                      </p>
+                      <a
+                        href={`http://localhost:8000/api/milestones/${result.milestone_id}/certificate`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs shadow-xs transition-colors flex items-center gap-1.5 self-start sm:self-auto shrink-0"
+                      >
+                        <span>📄 Download Certificate (PDF)</span>
+                        <span>&darr;</span>
+                      </a>
+                    </div>
                     <p className="text-slate-600 font-mono">
                       Remaining escrow balance: ${result.remaining_amount_usd.toFixed(2)} USD
+                    </p>
+                  </div>
+                ) : result.milestone_status === "fraud_review_pending" ? (
+                  <div className="p-4 bg-rose-100 border-2 border-rose-500 rounded-xl text-rose-950 space-y-2">
+                    <div className="flex items-center gap-2 font-bold text-rose-900 text-sm">
+                      <span className="p-1 bg-rose-200 rounded-lg">🚨</span>
+                      <span>AI Stylometric Security Alert: Sybil Attack Flagged</span>
+                    </div>
+                    <p className="leading-relaxed text-xs text-rose-900">
+                      The codebase Abstract Syntax Tree (AST) topology and identifier naming conventions match an existing account on file.
+                      Per enterprise anti-fraud protocol, this submission is flagged as <code className="bg-rose-200 px-1 py-0.5 rounded font-mono font-bold">fraud_review_pending</code> and the escrow payout is blocked.
                     </p>
                   </div>
                 ) : null}
