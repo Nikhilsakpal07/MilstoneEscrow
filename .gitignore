@@ -1,0 +1,42 @@
+# Environment variables & secrets (CRITICAL: Never commit secrets)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node.js & Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Antigravity QA Agent workspaces & trajectories
+workspaces/
+trajectories/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
