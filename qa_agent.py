@@ -20,18 +20,29 @@ except ImportError:
     policy = None
 
 
+def _format_result(data: dict) -> dict:
+    """Helper to ensure standard JSON schema returned to callers."""
+    res = {
+        "passed": bool(data.get("passed", False)),
+        "feedback": str(data.get("feedback", "No feedback provided.")),
+    }
+    if "extracted_data" in data and isinstance(data["extracted_data"], dict):
+        res["extracted_data"] = data["extracted_data"]
+    return res
+
+
 def _parse_agent_json(text: str) -> dict:
     """
-    Extracts and parses the final JSON evaluation block from the agent's output.
-    Expects {"passed": boolean, "feedback": "string"}.
+    Extracts and parses the final JSON evaluation block from the model's output.
+    Expects {"passed": boolean, "feedback": "string", optional "extracted_data": {...}}.
     """
     text = text.strip()
 
     # 1. Try directly parsing the full text
     try:
         data = json.loads(text)
-        if isinstance(data, dict) and "passed" in data and "feedback" in data:
-            return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+        if isinstance(data, dict) and "passed" in data:
+            return _format_result(data)
     except Exception:
         pass
 
@@ -41,8 +52,8 @@ def _parse_agent_json(text: str) -> dict:
         for block in reversed(code_blocks):
             try:
                 data = json.loads(block)
-                if isinstance(data, dict) and "passed" in data and "feedback" in data:
-                    return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+                if isinstance(data, dict) and "passed" in data:
+                    return _format_result(data)
             except Exception:
                 continue
 
@@ -63,25 +74,153 @@ def _parse_agent_json(text: str) -> dict:
             candidate = text[start_idx : last_brace + 1]
             try:
                 data = json.loads(candidate)
-                if isinstance(data, dict) and "passed" in data and "feedback" in data:
-                    return {"passed": bool(data["passed"]), "feedback": str(data["feedback"])}
+                if isinstance(data, dict) and "passed" in data:
+                    return _format_result(data)
             except Exception:
                 pass
 
     raise ValueError("Could not extract a valid JSON object with 'passed' and 'feedback' keys")
 
 
-async def evaluate_submission(
-    github_url: str,
+async def evaluate_multimodal_submission(
+    files: list[tuple[bytes, str, str]],
     acceptance_criteria: str,
     bounty_id: int,
     milestone_id: int | None = None,
     milestone_description: str | None = None,
 ) -> dict:
     """
-    Asynchronously evaluates a freelancer's code submission using the Gemini model.
-    Supports both full bounty and milestone-specific evaluation.
+    Uses Google Gemini 1.5 Pro to evaluate physical-world proof of work and financial receipts.
+    Extracts receipt total, date, and items, and verifies whether they logically fulfill
+    the milestone criteria.
+
+    Args:
+        files: List of (file_bytes, mime_type, filename) tuples.
+        acceptance_criteria: Overall bounty acceptance criteria.
+        bounty_id: The bounty ID.
+        milestone_id: Optional milestone ID.
+        milestone_description: Scope and requirements for the specific milestone.
+
+    Returns:
+        Structured dictionary with format:
+        {"passed": bool, "feedback": str, "extracted_data": {...}}
     """
+    from google import genai
+    from google.genai import types
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in environment variables.")
+
+    client = genai.Client(api_key=api_key)
+
+    # Build Gemini multimodal Part objects
+    parts = []
+    for file_bytes, mime_type, fname in files:
+        clean_mime = (mime_type or "").lower().strip()
+        if not clean_mime or clean_mime in ("application/octet-stream", "binary/octet-stream"):
+            if fname.lower().endswith(".pdf"):
+                clean_mime = "application/pdf"
+            elif fname.lower().endswith(".png"):
+                clean_mime = "image/png"
+            elif fname.lower().endswith((".jpg", ".jpeg")):
+                clean_mime = "image/jpeg"
+            elif fname.lower().endswith(".webp"):
+                clean_mime = "image/webp"
+            else:
+                clean_mime = "image/jpeg"
+
+        part = types.Part.from_bytes(data=file_bytes, mime_type=clean_mime)
+        parts.append(part)
+
+    # Formulate auditing prompt specifically for financial receipts & physical proof
+    prompt = f"""You are an autonomous auditor evaluating physical-world proof of work and financial receipts (such as NGO donations, humanitarian supplies, charity purchases, or on-the-ground service receipts) for milestone escrow release.
+
+Bounty ID: #{bounty_id}
+Milestone ID: #{milestone_id or 'General'}
+Milestone Scope & Required Deliverable:
+{milestone_description or 'Verify receipt and proof of work fulfills milestone requirements.'}
+
+Overall Acceptance Criteria:
+{acceptance_criteria}
+
+Instructions:
+1. Examine the provided receipt(s), document(s), or photo evidence carefully.
+2. Extract the key financial and transactional fields:
+   - Receipt / Transaction Total Amount (numerical value and currency)
+   - Date of transaction or receipt
+   - Itemized list of purchased items, services, or donation activities
+   - Vendor / Merchant / Recipient Organization name
+3. Cross-reference the extracted receipt items, total amount, and date against the milestone scope and acceptance criteria:
+   - Does the receipt demonstrate valid proof of work for this milestone?
+   - Do the items and total amount reasonably satisfy the milestone requirement?
+4. Output your final response strictly as a raw JSON block at the very end in the exact format:
+{{
+  "passed": boolean,
+  "feedback": "Detailed reasoning explaining the audit decision and how the receipt satisfies or fails the milestone criteria.",
+  "extracted_data": {{
+    "total_amount": "extracted total with currency (e.g. $150.00 USD)",
+    "date": "extracted date (e.g. YYYY-MM-DD)",
+    "vendor": "merchant or organization name",
+    "items": ["list", "of", "items", "or", "services"]
+  }}
+}}
+
+Ensure that "passed" is a boolean (true or false). Do not include any text outside or after the JSON block.
+"""
+
+    contents = [*parts, prompt]
+    primary_model = os.getenv("GEMINI_MULTIMODAL_MODEL", "gemini-1.5-pro")
+
+    print(f"[QA Agent] Analyzing {len(parts)} multimodal proof document(s) with Google Gemini ({primary_model}) for bounty #{bounty_id}...")
+
+    try:
+        response = client.models.generate_content(
+            model=primary_model,
+            contents=contents,
+        )
+    except Exception as model_err:
+        print(f"[QA Agent Notice] Primary model ({primary_model}) returned error: {model_err}. Trying fallback model...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+        )
+
+    response_text = response.text or ""
+    print(f"[QA Agent] Received Gemini response ({len(response_text)} chars). Parsing evaluation result...")
+    return _parse_agent_json(response_text)
+
+
+async def evaluate_submission(
+    github_url: str | None = None,
+    files: list[tuple[bytes, str, str]] | None = None,
+    acceptance_criteria: str = "",
+    bounty_id: int = 0,
+    milestone_id: int | None = None,
+    milestone_description: str | None = None,
+) -> dict:
+    """
+    Main evaluation entry point:
+    - If uploaded files (receipts/photos/PDFs) are provided, triggers Gemini 1.5 Pro multimodal evaluation.
+    - If a GitHub URL is provided, runs code repository cloning and test suite audit.
+    """
+    # 1. Multimodal File Submission (Receipts / Proof of work)
+    if files and len(files) > 0:
+        return await evaluate_multimodal_submission(
+            files=files,
+            acceptance_criteria=acceptance_criteria,
+            bounty_id=bounty_id,
+            milestone_id=milestone_id,
+            milestone_description=milestone_description,
+        )
+
+    # 2. GitHub URL Repository Submission
+    if not github_url or not github_url.strip():
+        return {
+            "passed": False,
+            "feedback": "Submission rejected: Neither a valid GitHub repository URL nor proof documents/receipts were provided.",
+        }
+
     scope_tag = f"m_{milestone_id}" if milestone_id is not None else "full"
     workspace_dir = os.path.abspath(f"./workspaces/bounty_{bounty_id}_{scope_tag}")
     trajectory_dir = os.path.abspath(f"./trajectories/bounty_{bounty_id}_{scope_tag}")
@@ -89,7 +228,6 @@ async def evaluate_submission(
     os.makedirs(workspace_dir, exist_ok=True)
     os.makedirs(trajectory_dir, exist_ok=True)
 
-    # Configure CapabilitiesConfig and LocalAgentConfig
     capabilities = CapabilitiesConfig(
         enable_subagents=True,
     )

@@ -52,7 +52,7 @@ class BountyCreate(BaseModel):
 
 
 class WorkSubmission(BaseModel):
-    github_url: str
+    github_url: str | None = None
     milestone_id: int | None = None
 
 
@@ -213,20 +213,23 @@ def create_bounty(
 @app.post("/api/bounties/{bounty_id}/submit-work", status_code=status.HTTP_200_OK)
 async def submit_work(
     bounty_id: int,
-    submission: WorkSubmission,
+    request: Request,
     milestone_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """
-    Submits freelancer work for a specific milestone (or next active milestone):
-    1. Fetches the Bounty, associated Escrow, and specific Milestone from DB.
-    2. Runs automated AI QA evaluation against the milestone and acceptance criteria.
-    3. Persists evaluation outcome to the AuditLog table.
+    Submits freelancer work for a milestone:
+    Accepts either multipart form data (file uploads: receipts/images/PDFs) or JSON payloads (GitHub URLs).
+    1. Fetches the Bounty, Escrow, and specific Milestone.
+    2. Runs automated AI QA evaluation:
+       - Multimodal analysis via Gemini 1.5 Pro if receipts/images/PDFs are provided.
+       - Code repository cloning and test execution if a GitHub URL is provided.
+    3. Persists evaluation outcome to AuditLog.
     4. If passed:
        - Captures authorization funds into escrow if not yet done.
        - Disburses ONLY that milestone's specific amount via PayPal Payouts.
-       - Updates milestone to COMPLETED and decrements bounty remaining funds.
-    5. Returns evaluation results, milestone status, and updated remaining funds.
+       - Updates milestone to COMPLETED and decrements remaining escrow funds.
+    5. Returns evaluation results, extracted receipt details, and updated balance.
     """
     # Fetch Bounty
     bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
@@ -236,8 +239,57 @@ async def submit_work(
             detail=f"Bounty with ID {bounty_id} not found.",
         )
 
+    # Parse incoming payload (supports multipart/form-data and application/json)
+    content_type = request.headers.get("content-type", "").lower()
+    github_url: str | None = None
+    target_milestone_id = milestone_id
+    uploaded_files_data: list[tuple[bytes, str, str]] = []
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        github_url = form.get("github_url")
+        if isinstance(github_url, str):
+            github_url = github_url.strip() or None
+
+        form_milestone = form.get("milestone_id")
+        if not target_milestone_id and form_milestone:
+            try:
+                target_milestone_id = int(form_milestone)
+            except (ValueError, TypeError):
+                pass
+
+        # Extract file uploads from form (supports 'files' and 'file' field keys)
+        for field_name in ["files", "file"]:
+            for item in form.getlist(field_name):
+                if hasattr(item, "read"):
+                    data = await item.read()
+                    if data and len(data) > 0:
+                        mime = getattr(item, "content_type", "image/jpeg") or "image/jpeg"
+                        fname = getattr(item, "filename", "receipt.jpg") or "receipt.jpg"
+                        uploaded_files_data.append((data, mime, fname))
+
+    elif "application/json" in content_type:
+        body = await request.json()
+        github_url = body.get("github_url")
+        if not target_milestone_id and body.get("milestone_id"):
+            try:
+                target_milestone_id = int(body.get("milestone_id"))
+            except (ValueError, TypeError):
+                pass
+    else:
+        try:
+            form = await request.form()
+            github_url = form.get("github_url")
+        except Exception:
+            pass
+
+    if not github_url and len(uploaded_files_data) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Submission must include either a valid GitHub URL or proof documents/receipt images.",
+        )
+
     # Identify targeted Milestone
-    target_milestone_id = milestone_id or submission.milestone_id
     if target_milestone_id is not None:
         milestone = db.query(models.Milestone).filter(
             models.Milestone.id == target_milestone_id,
@@ -269,9 +321,10 @@ async def submit_work(
     bounty.status = "AUDITING"
     db.commit()
 
-    # Run AI QA Evaluation
+    # Run AI QA Evaluation (multimodal receipt extraction OR code QA)
     eval_result = await evaluate_submission(
-        github_url=submission.github_url,
+        github_url=github_url,
+        files=uploaded_files_data if len(uploaded_files_data) > 0 else None,
         acceptance_criteria=bounty.acceptance_criteria,
         bounty_id=bounty_id,
         milestone_id=milestone.id,
@@ -280,6 +333,7 @@ async def submit_work(
 
     passed = eval_result.get("passed", False)
     feedback = eval_result.get("feedback", "")
+    extracted_data = eval_result.get("extracted_data")
 
     # Save to AuditLog
     audit_log = models.AuditLog(
@@ -338,7 +392,6 @@ async def submit_work(
 
     else:
         milestone.status = "REJECTED"
-        # Bounty status returns to IN_PROGRESS if funds remain
         bounty.status = "IN_PROGRESS"
 
     db.commit()
@@ -354,6 +407,7 @@ async def submit_work(
         "remaining_amount_usd": bounty.remaining_amount_usd,
         "feedback": feedback,
         "passed": passed,
+        "extracted_data": extracted_data,
     }
 
 
