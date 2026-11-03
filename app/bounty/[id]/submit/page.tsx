@@ -376,6 +376,8 @@ export default function SubmitWorkPage() {
                             className={`px-2 py-0.5 rounded-md font-semibold text-[10px] uppercase border ${
                               m.status === "COMPLETED"
                                 ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : m.status === "PENDING_ADMIN"
+                                ? "bg-amber-100 text-amber-900 border-amber-300 font-bold"
                                 : m.status === "REJECTED"
                                 ? "bg-rose-50 text-rose-700 border-rose-200"
                                 : m.status === "AUDITING"
@@ -383,7 +385,7 @@ export default function SubmitWorkPage() {
                                 : "bg-blue-50 text-blue-700 border-blue-200"
                             }`}
                           >
-                            {m.status}
+                            {m.status === "PENDING_ADMIN" ? "MULTI-SIG PENDING" : m.status}
                           </span>
                         </div>
                       </div>
@@ -650,7 +652,9 @@ export default function SubmitWorkPage() {
             {result && (
               <div
                 className={`p-6 rounded-2xl border transition-all space-y-4 ${
-                  result.passed
+                  result.milestone_status === "PENDING_ADMIN"
+                    ? "bg-amber-50/80 border-amber-300"
+                    : result.passed
                     ? "bg-emerald-50/70 border-emerald-200"
                     : "bg-rose-50/70 border-rose-200"
                 }`}
@@ -659,22 +663,34 @@ export default function SubmitWorkPage() {
                   <div className="flex items-center gap-2.5">
                     <span
                       className={`w-3 h-3 rounded-full ${
-                        result.passed ? "bg-emerald-500" : "bg-rose-500"
+                        result.milestone_status === "PENDING_ADMIN"
+                          ? "bg-amber-500 animate-pulse"
+                          : result.passed
+                          ? "bg-emerald-500"
+                          : "bg-rose-500"
                       }`}
                     />
                     <h3
                       className={`text-base font-bold ${
-                        result.passed ? "text-emerald-900" : "text-rose-900"
+                        result.milestone_status === "PENDING_ADMIN"
+                          ? "text-amber-900"
+                          : result.passed
+                          ? "text-emerald-900"
+                          : "text-rose-900"
                       }`}
                     >
-                      {result.passed
+                      {result.milestone_status === "PENDING_ADMIN"
+                        ? `Milestone #${result.milestone_id} AI Verified — Awaiting Admin Multi-Sig Sign-off`
+                        : result.passed
                         ? `Milestone #${result.milestone_id} Approved & Paid Out!`
                         : `Milestone #${result.milestone_id} Verification Failed`}
                     </h3>
                   </div>
                   <span
                     className={`text-xs font-bold px-2.5 py-1 rounded-full border ${
-                      result.passed
+                      result.milestone_status === "PENDING_ADMIN"
+                        ? "bg-amber-100 text-amber-900 border-amber-300 font-bold"
+                        : result.passed
                         ? "bg-emerald-100 text-emerald-800 border-emerald-300"
                         : "bg-rose-100 text-rose-800 border-rose-300"
                     }`}
@@ -683,7 +699,28 @@ export default function SubmitWorkPage() {
                   </span>
                 </div>
 
-                {result.passed && (
+                {result.milestone_status === "PENDING_ADMIN" ? (
+                  <div className="p-4 bg-white/90 rounded-xl border border-amber-300 text-xs text-amber-900 space-y-2.5">
+                    <div className="flex items-center gap-2 font-bold text-amber-950">
+                      <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <span>Hybrid Multi-Sig Governance (&gt; $5,000 USD Threshold Triggered)</span>
+                    </div>
+                    <p className="leading-relaxed text-amber-900/90">
+                      The autonomous AI evaluation <strong>passed</strong>! Because the total bounty value exceeds $5,000.00 USD, platform security policy requires dual sign-off. Escrow funds remain safely locked until a human administrator reviews and issues the final cryptographic approval in the Admin Portal.
+                    </p>
+                    <div className="pt-1">
+                      <Link
+                        href="/admin"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white font-bold rounded-lg shadow-xs text-xs transition-colors"
+                      >
+                        <span>Open Multi-Sig Admin Dashboard</span>
+                        <span>&rarr;</span>
+                      </Link>
+                    </div>
+                  </div>
+                ) : result.passed ? (
                   <div className="p-3 bg-white/80 rounded-xl border border-emerald-200 text-xs text-emerald-800 space-y-1">
                     <p className="font-semibold">
                       &check; PayPal Payout of ${result.milestone_amount_paid.toFixed(2)} USD was successfully sent to the beneficiary!
@@ -692,7 +729,7 @@ export default function SubmitWorkPage() {
                       Remaining escrow balance: ${result.remaining_amount_usd.toFixed(2)} USD
                     </p>
                   </div>
-                )}
+                ) : null}
 
                 {/* Gemini Extracted Data Card */}
                 {result.extracted_data && (

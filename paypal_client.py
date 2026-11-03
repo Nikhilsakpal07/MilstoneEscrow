@@ -1,5 +1,6 @@
 import os
 import time
+import concurrent.futures
 import requests
 from dotenv import load_dotenv
 
@@ -63,7 +64,7 @@ def capture_authorization(
 ) -> dict:
     """
     Calls POST /v2/payments/authorizations/{authorization_id}/capture to pull the funds.
-    Supports full or partial captures.
+    Supports full or partial captures. Idempotent: recognizes already-captured authorizations.
     """
     token = get_access_token()
     url = f"{PAYPAL_BASE_URL}/v2/payments/authorizations/{authorization_id}/capture"
@@ -81,8 +82,100 @@ def capture_authorization(
         }
 
     response = requests.post(url, headers=headers, json=payload)
+    if response.status_code in (200, 201):
+        return response.json()
+
+    # Check for idempotent already-captured response from PayPal
+    try:
+        err_json = response.json()
+        err_name = err_json.get("name", "")
+        if "ALREADY_CAPTURED" in err_name:
+            print(f"[PayPal Capture Notice] Authorization {authorization_id} was already captured.")
+            return {
+                "id": f"captured_{authorization_id}",
+                "status": "COMPLETED",
+                "note": "already_captured",
+            }
+    except Exception:
+        pass
+
     response.raise_for_status()
     return response.json()
+
+
+def capture_multiple_authorizations(authorization_ids: list[str]) -> list[dict]:
+    """
+    Multi-Sponsor Pooling:
+    Loops through all authorized IDs for a milestone and captures them simultaneously
+    using concurrent worker threads, pooling the funds to the escrow balance.
+    """
+    if not authorization_ids:
+        return []
+
+    # Clean and deduplicate while preserving order
+    clean_ids = []
+    for aid in authorization_ids:
+        if isinstance(aid, str) and aid.strip() and aid.strip() not in clean_ids:
+            clean_ids.append(aid.strip())
+
+    if not clean_ids:
+        return []
+
+    print(f"[PayPal Multi-Sponsor Pooling] Simultaneously capturing {len(clean_ids)} authorization(s): {clean_ids}")
+    results = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(clean_ids))) as executor:
+        future_to_id = {
+            executor.submit(capture_authorization, auth_id): auth_id
+            for auth_id in clean_ids
+        }
+        for future in concurrent.futures.as_completed(future_to_id):
+            auth_id = future_to_id[future]
+            try:
+                capture_res = future.result()
+                results.append({
+                    "authorization_id": auth_id,
+                    "capture_id": capture_res.get("id"),
+                    "status": capture_res.get("status", "COMPLETED"),
+                    "raw": capture_res,
+                })
+            except Exception as err:
+                print(f"[PayPal Capture Error] Failed to capture authorization {auth_id}: {err}")
+                results.append({
+                    "authorization_id": auth_id,
+                    "status": "FAILED",
+                    "error": str(err),
+                })
+
+    return results
+
+
+def pool_and_payout_milestone(
+    authorization_ids: list[str],
+    freelancer_email: str,
+    amount: float,
+    bounty_id: int,
+    milestone_id: int | None = None,
+) -> dict:
+    """
+    Multi-Sponsor Pooling & Payout Pipeline:
+    1. Simultaneously captures all authorized sponsor IDs, pooling the funds.
+    2. Disburses the full pooled milestone amount to the payee using PayPal Payouts.
+    """
+    capture_results = capture_multiple_authorizations(authorization_ids)
+
+    payout_result = execute_payout(
+        freelancer_email=freelancer_email,
+        amount=amount,
+        bounty_id=bounty_id,
+        milestone_id=milestone_id,
+    )
+
+    return {
+        "captures": capture_results,
+        "payout": payout_result,
+        "amount_pooled": amount,
+    }
 
 
 def execute_payout(

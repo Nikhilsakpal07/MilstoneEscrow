@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, JSON
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -13,7 +13,8 @@ class Bounty(Base):
     amount_usd = Column(Float)
     remaining_amount_usd = Column(Float, nullable=True)  # Tracks remaining funds in escrow
     freelancer_email = Column(String)
-    status = Column(String, default="AWAITING_FUNDS")  # AWAITING_FUNDS, LOCKED, IN_PROGRESS, COMPLETED, REJECTED
+    status = Column(String, default="AWAITING_FUNDS")  # AWAITING_FUNDS, LOCKED, IN_PROGRESS, PENDING_ADMIN, COMPLETED, REJECTED
+    requires_human_approval = Column(Boolean, default=False)  # Hybrid Multi-Sig (> $5,000 threshold)
 
     escrow = relationship("Escrow", back_populates="bounty", uselist=False)
     audit_logs = relationship("AuditLog", back_populates="bounty")
@@ -29,8 +30,10 @@ class Milestone(Base):
     deadline = Column(String)  # e.g., '2026-12-01'
     percentage = Column(Float)  # e.g., 50.0 (%)
     amount_usd = Column(Float)  # e.g., 250.00 ($)
-    status = Column(String, default="LOCKED")  # LOCKED, AUDITING, COMPLETED, REJECTED
+    status = Column(String, default="LOCKED")  # LOCKED, AUDITING, PENDING_ADMIN, COMPLETED, REJECTED
     paypal_payout_batch_id = Column(String, nullable=True)
+    authorization_ids = Column(JSON, default=list)  # Multi-Sponsor Pooling: array of PayPal authorization IDs
+    requires_human_approval = Column(Boolean, default=False)  # Hybrid Multi-Sig (> $5,000)
 
     bounty = relationship("Bounty", back_populates="milestones")
     audit_logs = relationship("AuditLog", back_populates="milestone")
@@ -41,9 +44,13 @@ class Escrow(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     bounty_id = Column(Integer, ForeignKey("bounties.id"))
-    paypal_order_id = Column(String, unique=True, index=True)
+    paypal_order_id = Column(String, unique=True, index=True, nullable=True)
     paypal_authorization_id = Column(String, unique=True, nullable=True)
     paypal_capture_id = Column(String, unique=True, nullable=True)
+    # Multi-Sponsor Pooling
+    paypal_order_ids = Column(JSON, default=list)
+    paypal_authorization_ids = Column(JSON, default=list)
+    paypal_capture_ids = Column(JSON, default=list)
 
     bounty = relationship("Bounty", back_populates="escrow")
 

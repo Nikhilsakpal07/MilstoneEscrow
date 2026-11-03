@@ -50,6 +50,9 @@ const StatusBadgeRenderer = (params: ICellRendererParams) => {
     case "AUDITING":
       badgeClasses = "bg-purple-50 text-purple-700 border-purple-200 ring-1 ring-purple-500/20";
       break;
+    case "PENDING_ADMIN":
+      badgeClasses = "bg-amber-100 text-amber-900 border-amber-300 ring-1 ring-amber-500/40 font-bold";
+      break;
     case "AWAITING_FUNDS":
       badgeClasses = "bg-amber-50 text-amber-700 border-amber-200 ring-1 ring-amber-500/20";
       break;
@@ -95,19 +98,30 @@ const ActionCellRenderer = (params: ICellRendererParams) => {
   const bountyId = params.data?.id;
   const status = params.data?.status;
   const isCompleted = status === "COMPLETED";
+  const isPendingAdmin = status === "PENDING_ADMIN";
 
   return (
     <div className="flex items-center h-full gap-2">
-      <Link
-        href={`/bounty/${bountyId}/submit`}
-        className={`text-xs font-medium px-3 py-1 rounded transition-colors ${
-          isCompleted
-            ? "bg-slate-100 text-slate-500 hover:bg-slate-200"
-            : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
-        }`}
-      >
-        {isCompleted ? "View Audit" : "Submit Work"}
-      </Link>
+      {isPendingAdmin ? (
+        <Link
+          href="/admin"
+          className="text-xs font-bold px-3 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition-colors flex items-center gap-1"
+        >
+          <span>Admin Review</span>
+          <span className="text-[10px]">&rarr;</span>
+        </Link>
+      ) : (
+        <Link
+          href={`/bounty/${bountyId}/submit`}
+          className={`text-xs font-medium px-3 py-1 rounded transition-colors ${
+            isCompleted
+              ? "bg-slate-100 text-slate-500 hover:bg-slate-200"
+              : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
+          }`}
+        >
+          {isCompleted ? "View Audit" : "Submit Work"}
+        </Link>
+      )}
     </div>
   );
 };
@@ -204,6 +218,30 @@ export default function DashboardPage() {
         filter: true,
       },
       {
+        headerName: "Governance",
+        width: 145,
+        valueGetter: (params) => {
+          const isHigh = (params.data?.amount_usd || 0) > 5000;
+          return isHigh ? "Multi-Sig" : "Auto-Escrow";
+        },
+        cellRenderer: (params: ICellRendererParams) => {
+          const isHigh = params.value === "Multi-Sig";
+          return (
+            <div className="flex items-center h-full">
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase border ${
+                  isHigh
+                    ? "bg-amber-50 text-amber-800 border-amber-300"
+                    : "bg-slate-50 text-slate-600 border-slate-200"
+                }`}
+              >
+                {isHigh ? "🛡️ >$5K Multi-Sig" : "Auto AI"}
+              </span>
+            </div>
+          );
+        },
+      },
+      {
         headerName: "Action",
         width: 140,
         cellRenderer: ActionCellRenderer,
@@ -223,6 +261,34 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* Pending Multi-Sig Notification Banner */}
+      {bounties.some((b) => b.status === "PENDING_ADMIN") && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <span className="p-2 bg-amber-100 text-amber-800 rounded-xl">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </span>
+            <div>
+              <h4 className="text-sm font-bold text-amber-900">
+                Hybrid Multi-Sig Sign-off Required
+              </h4>
+              <p className="text-xs text-amber-800 mt-0.5">
+                One or more high-value milestone submissions (&gt; $5,000 USD) have passed AI evaluation and are waiting for human co-signer approval.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/admin"
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors shrink-0 flex items-center gap-1.5"
+          >
+            <span>Open Multi-Sig Admin Portal</span>
+            <span>&rarr;</span>
+          </Link>
+        </div>
+      )}
+
       {/* Top Banner & Stats */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div>
