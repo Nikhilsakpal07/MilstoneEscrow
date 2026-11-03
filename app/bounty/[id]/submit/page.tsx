@@ -59,6 +59,36 @@ interface AppealResult {
   remaining_amount_usd: number;
 }
 
+interface CompromiseMilestone {
+  description: string;
+  deadline: string;
+  percentage: number;
+  amount_usd?: number;
+}
+
+interface ScopeCompromise {
+  summary: string;
+  original_amount_usd: number;
+  compromise_amount_usd: number;
+  delta_amount: number;
+  compromise_criteria: string;
+  compromise_milestones: CompromiseMilestone[];
+  reasoning: string;
+}
+
+interface NegotiationResponse {
+  bounty_id: number;
+  original_terms: {
+    id: number;
+    title: string;
+    amount_usd: number;
+    acceptance_criteria: string;
+    freelancer_email: string;
+    milestones: any[];
+  };
+  ai_compromise: ScopeCompromise;
+}
+
 type SubmissionMode = "receipt" | "github";
 
 export default function SubmitWorkPage() {
@@ -86,6 +116,17 @@ export default function SubmitWorkPage() {
   const [appealError, setAppealError] = useState<string | null>(null);
   const [appealResult, setAppealResult] = useState<AppealResult | null>(null);
   const [showAppealForm, setShowAppealForm] = useState(false);
+
+  // AI Scope Negotiation State
+  const [showNegotiateModal, setShowNegotiateModal] = useState(false);
+  const [counterOfferText, setCounterOfferText] = useState("");
+  const [proposedBudget, setProposedBudget] = useState("");
+  const [proposedTimeline, setProposedTimeline] = useState("");
+  const [isNegotiating, setIsNegotiating] = useState(false);
+  const [negotiationResult, setNegotiationResult] = useState<NegotiationResponse | null>(null);
+  const [negotiationError, setNegotiationError] = useState<string | null>(null);
+  const [isAcceptingCompromise, setIsAcceptingCompromise] = useState(false);
+  const [compromiseAcceptedMsg, setCompromiseAcceptedMsg] = useState<string | null>(null);
 
   // Fetch bounty and milestone details
   const fetchBounty = async () => {
@@ -255,6 +296,94 @@ export default function SubmitWorkPage() {
     }
   };
 
+  // AI Scope Negotiation Handlers
+  const handleNegotiateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!counterOfferText.trim()) {
+      setNegotiationError("Please state your counter-offer or scope adjustment explanation.");
+      return;
+    }
+
+    try {
+      setIsNegotiating(true);
+      setNegotiationError(null);
+      setNegotiationResult(null);
+
+      const payload: any = {
+        counter_offer: counterOfferText.trim(),
+        freelancer_email: bounty?.freelancer_email,
+      };
+      if (proposedBudget.trim() && !isNaN(Number(proposedBudget))) {
+        payload.proposed_amount_usd = parseFloat(proposedBudget);
+      }
+      if (proposedTimeline.trim()) {
+        payload.proposed_timeline = proposedTimeline.trim();
+      }
+
+      const res = await fetch(`http://localhost:8000/api/bounties/${bountyId}/negotiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Scope negotiation failed with status ${res.status}`);
+      }
+
+      const data: NegotiationResponse = await res.json();
+      setNegotiationResult(data);
+    } catch (err: any) {
+      console.error("Scope negotiation error:", err);
+      setNegotiationError(err.message || "Failed to formulate negotiation compromise.");
+    } finally {
+      setIsNegotiating(false);
+    }
+  };
+
+  const handleAcceptCompromise = async () => {
+    if (!negotiationResult?.ai_compromise) return;
+    const comp = negotiationResult.ai_compromise;
+
+    try {
+      setIsAcceptingCompromise(true);
+      setNegotiationError(null);
+
+      const res = await fetch(`http://localhost:8000/api/bounties/${bountyId}/negotiate/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          compromise_amount_usd: comp.compromise_amount_usd,
+          compromise_criteria: comp.compromise_criteria,
+          compromise_milestones: comp.compromise_milestones.map((m) => ({
+            description: m.description,
+            deadline: m.deadline,
+            percentage: Number(m.percentage),
+          })),
+          reasoning: comp.reasoning,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Ratifying compromise failed (${res.status})`);
+      }
+
+      setCompromiseAcceptedMsg("AI Compromise Terms successfully ratified! Updated budget and milestones are now active.");
+      setNegotiationResult(null);
+      setCounterOfferText("");
+      setProposedBudget("");
+      setProposedTimeline("");
+      setShowNegotiateModal(false);
+      await fetchBounty();
+    } catch (err: any) {
+      console.error("Accept compromise error:", err);
+      setNegotiationError(err.message || "Failed to accept AI compromise terms.");
+    } finally {
+      setIsAcceptingCompromise(false);
+    }
+  };
+
   const selectedMilestone = bounty?.milestones?.find(
     (m) => m.id === selectedMilestoneId
   );
@@ -304,21 +433,295 @@ export default function SubmitWorkPage() {
                     </span>
                   </p>
                 </div>
-                <div className="flex items-center gap-4 text-right">
-                  <div>
-                    <span className="block text-xs text-slate-400">Total Escrow</span>
-                    <span className="font-mono text-sm font-bold text-slate-800">
-                      ${bounty.amount_usd.toFixed(2)}
-                    </span>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <div className="flex items-center gap-4 text-right">
+                    <div>
+                      <span className="block text-xs text-slate-400">Total Escrow</span>
+                      <span className="font-mono text-sm font-bold text-slate-800">
+                        ${bounty.amount_usd.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="border-l border-slate-200 pl-4">
+                      <span className="block text-xs text-slate-400">Remaining Funds</span>
+                      <span className="font-mono text-sm font-bold text-emerald-600">
+                        ${(bounty.remaining_amount_usd ?? bounty.amount_usd).toFixed(2)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="border-l border-slate-200 pl-4">
-                    <span className="block text-xs text-slate-400">Remaining Funds</span>
-                    <span className="font-mono text-sm font-bold text-emerald-600">
-                      ${(bounty.remaining_amount_usd ?? bounty.amount_usd).toFixed(2)}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNegotiateModal(!showNegotiateModal);
+                      setCompromiseAcceptedMsg(null);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white shadow-sm flex items-center gap-1.5 transition-all self-end sm:self-auto"
+                  >
+                    <span>🤝 Negotiate Scope</span>
+                  </button>
                 </div>
               </div>
+
+              {/* Scope Compromise Accepted Message */}
+              {compromiseAcceptedMsg && (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-900 flex items-center justify-between">
+                  <span>✓ {compromiseAcceptedMsg}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCompromiseAcceptedMsg(null)}
+                    className="font-bold underline text-emerald-700 ml-2"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {/* AI Scope Negotiation Interface */}
+              {showNegotiateModal && (
+                <div className="p-5 sm:p-6 bg-gradient-to-br from-purple-50 to-indigo-50/70 border border-purple-200 rounded-2xl space-y-4">
+                  <div className="flex items-center justify-between border-b border-purple-200/70 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="p-1.5 bg-purple-600 text-white rounded-lg text-sm">🤝</span>
+                      <div>
+                        <h3 className="text-sm font-bold text-purple-950 flex items-center gap-2">
+                          <span>AI Scope Negotiation Middleman</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-300 font-semibold">
+                            Gemini 1.5 Pro
+                          </span>
+                        </h3>
+                        <p className="text-xs text-purple-900/80 mt-0.5">
+                          Submit a counter-offer on budget or timeline. The AI Middleman evaluates the feasibility and drafts a balanced split-screen compromise.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowNegotiateModal(false)}
+                      className="text-xs text-purple-700 hover:text-purple-900 font-semibold"
+                    >
+                      &times; Close
+                    </button>
+                  </div>
+
+                  {negotiationError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800">
+                      {negotiationError}
+                    </div>
+                  )}
+
+                  {/* Counter-Offer Form (if not yet negotiated) */}
+                  {!negotiationResult ? (
+                    <form onSubmit={handleNegotiateSubmit} className="space-y-3.5">
+                      <div>
+                        <label className="block text-xs font-semibold text-purple-950 mb-1">
+                          Freelancer&apos;s Counter-Offer / Scope Adjustment Rationale <span className="text-rose-500">*</span>:
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={counterOfferText}
+                          onChange={(e) => setCounterOfferText(e.target.value)}
+                          placeholder="e.g. The Figma designs require custom WebGL animations not in the original scope. I request $650 total (+$150) and a 4-day deadline extension for milestone #2..."
+                          className="w-full text-xs p-3 rounded-xl border border-purple-200 bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-slate-800 resize-none"
+                          disabled={isNegotiating}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-purple-950 mb-1">
+                            Proposed Target Budget (USD, Optional):
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={proposedBudget}
+                            onChange={(e) => setProposedBudget(e.target.value)}
+                            placeholder="e.g. 650.00"
+                            className="w-full text-xs p-2.5 rounded-lg border border-purple-200 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            disabled={isNegotiating}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-purple-950 mb-1">
+                            Proposed Timeline (Optional):
+                          </label>
+                          <input
+                            type="text"
+                            value={proposedTimeline}
+                            onChange={(e) => setProposedTimeline(e.target.value)}
+                            placeholder="e.g. 2 weeks or +5 days"
+                            className="w-full text-xs p-2.5 rounded-lg border border-purple-200 bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            disabled={isNegotiating}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={isNegotiating || !counterOfferText.trim()}
+                          className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-2"
+                        >
+                          {isNegotiating ? (
+                            <>
+                              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>AI Middleman Formulating Compromise...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Submit Counter-Offer to AI Middleman</span>
+                              <span>&rarr;</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    /* SPLIT SCREEN VIEW: Original Terms vs AI Proposed Terms */
+                    <div className="space-y-4">
+                      {negotiationResult.ai_compromise.summary && (
+                        <div className="p-3 bg-white/80 rounded-xl border border-purple-200 text-xs text-purple-900 leading-relaxed font-medium">
+                          <strong>AI Compromise Summary:</strong> {negotiationResult.ai_compromise.summary}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* LEFT COLUMN: Original Terms */}
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 space-y-3">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-slate-400" />
+                              Original Terms
+                            </span>
+                            <span className="font-mono text-sm font-bold text-slate-700">
+                              ${negotiationResult.original_terms.amount_usd.toFixed(2)} USD
+                            </span>
+                          </div>
+
+                          <div className="text-xs space-y-1">
+                            <span className="font-semibold text-slate-800">Original Criteria:</span>
+                            <p className="text-slate-600 text-[11px] leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                              {negotiationResult.original_terms.acceptance_criteria}
+                            </p>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <span className="text-[11px] font-semibold text-slate-700 uppercase">
+                              Original Milestones:
+                            </span>
+                            <div className="space-y-1.5">
+                              {negotiationResult.original_terms.milestones?.map((m: any, idx: number) => (
+                                <div key={idx} className="p-2 bg-slate-50 rounded-lg text-xs flex justify-between gap-2">
+                                  <div>
+                                    <p className="font-medium text-slate-800 line-clamp-1">
+                                      #{idx + 1}: {m.description}
+                                    </p>
+                                    <p className="text-[10px] text-slate-400">Deadline: {m.deadline || "Open"}</p>
+                                  </div>
+                                  <span className="font-mono font-bold text-slate-700 text-xs shrink-0">
+                                    ${Number(m.amount_usd).toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* RIGHT COLUMN: AI Proposed Terms */}
+                        <div className="p-4 bg-white rounded-xl border-2 border-purple-400/80 shadow-md space-y-3 relative">
+                          <div className="flex items-center justify-between border-b border-purple-100 pb-2">
+                            <span className="text-xs font-bold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-purple-600" />
+                              AI Proposed Compromise
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-sm font-extrabold text-purple-700">
+                                ${negotiationResult.ai_compromise.compromise_amount_usd.toFixed(2)} USD
+                              </span>
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                                  negotiationResult.ai_compromise.delta_amount >= 0
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-blue-100 text-blue-800"
+                                }`}
+                              >
+                                {negotiationResult.ai_compromise.delta_amount >= 0 ? "+" : ""}
+                                ${negotiationResult.ai_compromise.delta_amount.toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-xs space-y-1">
+                            <span className="font-semibold text-purple-950">Compromise Acceptance Criteria:</span>
+                            <p className="text-purple-900 text-[11px] leading-relaxed bg-purple-50/60 p-2.5 rounded-lg border border-purple-200">
+                              {negotiationResult.ai_compromise.compromise_criteria}
+                            </p>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <span className="text-[11px] font-semibold text-purple-900 uppercase">
+                              Compromise Milestones:
+                            </span>
+                            <div className="space-y-1.5">
+                              {negotiationResult.ai_compromise.compromise_milestones?.map((m: any, idx: number) => (
+                                <div key={idx} className="p-2 bg-purple-50/50 rounded-lg text-xs flex justify-between gap-2 border border-purple-100">
+                                  <div>
+                                    <p className="font-bold text-purple-950 line-clamp-1">
+                                      #{idx + 1}: {m.description}
+                                    </p>
+                                    <p className="text-[10px] text-purple-700">Deadline: {m.deadline || "Adjusted"} &bull; {m.percentage}%</p>
+                                  </div>
+                                  <span className="font-mono font-bold text-purple-800 text-xs shrink-0">
+                                    ${Number(m.amount_usd || (negotiationResult.ai_compromise.compromise_amount_usd * (m.percentage / 100))).toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-200 leading-relaxed font-mono">
+                            <span className="font-bold text-slate-800">AI Mediator Reasoning: </span>
+                            <span>{negotiationResult.ai_compromise.reasoning}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Bottom Accept / Decline Buttons */}
+                      <div className="pt-2 flex items-center justify-end gap-3 border-t border-purple-200">
+                        <button
+                          type="button"
+                          onClick={() => setNegotiationResult(null)}
+                          disabled={isAcceptingCompromise}
+                          className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 transition-colors"
+                        >
+                          Revise Counter-Offer
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleAcceptCompromise}
+                          disabled={isAcceptingCompromise}
+                          className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {isAcceptingCompromise ? (
+                            <>
+                              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>Ratifying Compromise Terms...</span>
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              <span>Accept AI Compromise Terms</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Milestone Selection List */}
               <div className="space-y-2">

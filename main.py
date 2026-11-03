@@ -14,7 +14,12 @@ from paypal_client import (
     capture_multiple_authorizations,
     pool_and_payout_milestone,
 )
-from qa_agent import evaluate_submission, mediate_dispute
+from qa_agent import (
+    evaluate_submission,
+    mediate_dispute,
+    generate_conversational_escrow,
+    negotiate_scope_compromise,
+)
 
 # Ensure database tables and newly added columns exist
 models.Base.metadata.create_all(bind=engine)
@@ -87,6 +92,24 @@ class WorkSubmission(BaseModel):
 class AppealRequest(BaseModel):
     appeal_text: str
     milestone_id: int | None = None
+
+
+class GenerateScopeRequest(BaseModel):
+    prompt: str
+
+
+class NegotiateScopeRequest(BaseModel):
+    counter_offer: str
+    freelancer_email: str | None = None
+    proposed_amount_usd: float | None = None
+    proposed_timeline: str | None = None
+
+
+class AcceptCompromiseRequest(BaseModel):
+    compromise_amount_usd: float
+    compromise_criteria: str
+    compromise_milestones: list[MilestoneInput]
+    reasoning: str | None = None
 
 
 @app.get("/")
@@ -958,6 +981,167 @@ def add_sponsor_to_milestone(
         "milestone_amount_usd": milestone.amount_usd,
         "bounty_amount_usd": bounty.amount_usd,
         "requires_human_approval": bounty.requires_human_approval,
+    }
+
+
+# =====================================================================
+# AI CONVERSATIONAL ESCROW GEN & SCOPE NEGOTIATION ROUTES
+# =====================================================================
+
+@app.post("/api/bounties/generate-scope", status_code=status.HTTP_200_OK)
+async def generate_escrow_scope(scope_in: GenerateScopeRequest):
+    """
+    Conversational Escrow Gen:
+    Parses natural language requirements into a strict JSON structure of milestones,
+    deadlines, budget allocations, and acceptance criteria using Gemini 1.5 Pro.
+    """
+    if not scope_in.prompt or not scope_in.prompt.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Prompt text cannot be empty.",
+        )
+
+    parsed_escrow = await generate_conversational_escrow(scope_in.prompt.strip())
+    return parsed_escrow
+
+
+@app.post("/api/bounties/{bounty_id}/negotiate", status_code=status.HTTP_200_OK)
+async def negotiate_bounty_scope(
+    bounty_id: int,
+    neg_in: NegotiateScopeRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    AI Scope Negotiation Agent:
+    Takes the freelancer's counter-offer, retrieves original bounty terms, and uses Gemini 1.5 Pro
+    to evaluate budget vs. timeline constraints, returning a balanced JSON compromise.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bounty #{bounty_id} not found.",
+        )
+
+    original_bounty = {
+        "id": bounty.id,
+        "title": bounty.title,
+        "amount_usd": float(bounty.amount_usd or 0.0),
+        "acceptance_criteria": bounty.acceptance_criteria,
+        "freelancer_email": bounty.freelancer_email,
+        "milestones": [
+            {
+                "id": m.id,
+                "description": m.description,
+                "deadline": m.deadline,
+                "percentage": float(m.percentage or 0.0),
+                "amount_usd": float(m.amount_usd or 0.0),
+            }
+            for m in (bounty.milestones or [])
+        ],
+    }
+
+    compromise = await negotiate_scope_compromise(
+        bounty_id=bounty.id,
+        original_bounty=original_bounty,
+        counter_offer=neg_in.counter_offer,
+        freelancer_email=neg_in.freelancer_email or bounty.freelancer_email,
+        proposed_amount=neg_in.proposed_amount_usd,
+        proposed_timeline=neg_in.proposed_timeline,
+    )
+
+    return {
+        "bounty_id": bounty.id,
+        "original_terms": original_bounty,
+        "ai_compromise": compromise,
+    }
+
+
+@app.post("/api/bounties/{bounty_id}/negotiate/accept", status_code=status.HTTP_200_OK)
+def accept_negotiated_compromise(
+    bounty_id: int,
+    accept_in: AcceptCompromiseRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Applies the agreed AI Scope Negotiation compromise to the live database record,
+    updating the bounty budget, acceptance criteria, and replacing milestones with the compromise terms.
+    """
+    bounty = db.query(models.Bounty).filter(models.Bounty.id == bounty_id).first()
+    if not bounty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bounty #{bounty_id} not found.",
+        )
+
+    old_amount = float(bounty.amount_usd or 0.0)
+    new_amount = round(float(accept_in.compromise_amount_usd), 2)
+
+    bounty.amount_usd = new_amount
+    bounty.remaining_amount_usd = new_amount
+    bounty.acceptance_criteria = accept_in.compromise_criteria
+
+    if bounty.amount_usd > HIGH_VALUE_THRESHOLD:
+        bounty.requires_human_approval = True
+
+    # Gather existing pooled authorization IDs
+    escrow_auths = []
+    if bounty.escrow and bounty.escrow.paypal_authorization_ids:
+        escrow_auths = list(bounty.escrow.paypal_authorization_ids)
+    elif bounty.escrow and bounty.escrow.paypal_authorization_id:
+        escrow_auths = [bounty.escrow.paypal_authorization_id]
+
+    # Remove previous milestones and insert the accepted compromise milestones
+    db.query(models.Milestone).filter(models.Milestone.bounty_id == bounty.id).delete()
+
+    for m in accept_in.compromise_milestones:
+        pct = float(m.percentage)
+        m_amount = round(new_amount * (pct / 100.0), 2)
+        milestone_obj = models.Milestone(
+            bounty_id=bounty.id,
+            description=m.description,
+            deadline=m.deadline,
+            percentage=pct,
+            amount_usd=m_amount,
+            status="LOCKED",
+            authorization_ids=list(escrow_auths),
+            requires_human_approval=bool(bounty.requires_human_approval or m_amount > HIGH_VALUE_THRESHOLD),
+        )
+        db.add(milestone_obj)
+
+    # Save to AuditLog
+    audit = models.AuditLog(
+        bounty_id=bounty.id,
+        trajectory_id=f"bounty_{bounty_id}_negotiation_accepted",
+        passed=True,
+        ai_feedback=(
+            f"[AI SCOPE NEGOTIATION ACCEPTED]: Parties agreed to AI compromise. "
+            f"Budget adjusted: ${old_amount:.2f} -> ${new_amount:.2f} USD. "
+            f"Reasoning: {accept_in.reasoning or 'Terms mutually ratified.'}"
+        ),
+    )
+    db.add(audit)
+
+    db.commit()
+    db.refresh(bounty)
+
+    return {
+        "status": "ACCEPTED",
+        "message": "AI compromise terms successfully ratified and applied to bounty.",
+        "bounty_id": bounty.id,
+        "amount_usd": bounty.amount_usd,
+        "acceptance_criteria": bounty.acceptance_criteria,
+        "milestones": [
+            {
+                "id": m.id,
+                "description": m.description,
+                "deadline": m.deadline,
+                "percentage": m.percentage,
+                "amount_usd": m.amount_usd,
+                "status": m.status,
+            }
+            for m in (bounty.milestones or [])
+        ],
     }
 
 

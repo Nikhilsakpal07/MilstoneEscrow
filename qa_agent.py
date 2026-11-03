@@ -521,3 +521,177 @@ Instructions:
             "passed": False,
             "feedback": f"Gemini QA evaluation failed: {str(primary_err)}. Raw output: {response_text.strip()}",
         }
+
+
+async def generate_conversational_escrow(prompt_text: str) -> dict:
+    """
+    Conversational Escrow Gen:
+    Uses Google Gemini 1.5 Pro to parse natural language project requirements
+    (e.g., 'Pay $500 total, $100 on design, $400 on launch') into a strict JSON
+    structure with milestones, percentage allocations, deadlines, criteria, and amounts.
+    """
+    from google import genai
+    import datetime
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in environment variables.")
+
+    client = genai.Client(api_key=api_key)
+    today_str = datetime.date.today().isoformat()
+
+    architect_prompt = f"""You are the Autonomous Escrow Architect AI for MilestoneEscrow.
+Your job is to parse natural language freelance contract requirements, bounty descriptions, or project scopes into a strict, production-ready milestone escrow schema.
+
+Today's Date: {today_str}
+
+User Prompt:
+\"\"\"{prompt_text}\"\"\"
+
+Instructions:
+1. Extract and infer:
+   - A professional Project Title
+   - Concrete, verifiable Acceptance Criteria
+   - Total Bounty Amount in USD (float)
+   - Freelancer PayPal Email (extract if mentioned, otherwise empty string "")
+   - A sequential array of Milestones:
+     * description: concise deliverable for this milestone phase
+     * deadline: calculated ISO date (YYYY-MM-DD), relative to today ({today_str}) based on any stated timelines or sensible defaults (e.g., 7-14 days intervals)
+     * percentage: float percentage allocation (e.g. 25.0, 50.0). The sum of all milestone percentages MUST strictly equal 100.0.
+     * amount_usd: calculated dollar amount for this milestone (percentage / 100 * total amount)
+2. Ensure the sum of all milestone percentages strictly equals 100.0, and the sum of amounts equals the total amount.
+3. If only a single deliverable or total budget is mentioned without explicit milestone splits, formulate a logical 2-3 phase breakdown (e.g., Architecture/Design 30%, Development 50%, QA/Deployment 20%).
+4. Output your response strictly as a raw JSON block at the very end in the exact format:
+{{
+  "title": "string",
+  "acceptance_criteria": "string",
+  "amount_usd": float,
+  "freelancer_email": "string",
+  "milestones": [
+    {{
+      "description": "string",
+      "deadline": "YYYY-MM-DD",
+      "percentage": float,
+      "amount_usd": float
+    }}
+  ],
+  "ai_summary": "1-2 sentence overview of the escrow architecture."
+}}
+
+Do not include any text, markdown, or commentary outside the JSON block.
+"""
+
+    model_name = os.getenv("GEMINI_PARSE_MODEL", "gemini-1.5-pro")
+    print(f"[Conversational Escrow] Parsing natural language prompt with {model_name}...")
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=architect_prompt,
+        )
+    except Exception as err:
+        print(f"[Conversational Escrow Notice] Primary model error: {err}. Trying gemini-2.5-flash fallback...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=architect_prompt,
+        )
+
+    response_text = response.text or ""
+    print(f"[Conversational Escrow] Gemini response received ({len(response_text)} chars). Parsing JSON...")
+    return _parse_agent_json(response_text)
+
+
+async def negotiate_scope_compromise(
+    bounty_id: int,
+    original_bounty: dict,
+    counter_offer: str,
+    freelancer_email: str | None = None,
+    proposed_amount: float | None = None,
+    proposed_timeline: str | None = None,
+) -> dict:
+    """
+    AI Scope Negotiation Agent:
+    Acts as an objective middleman balancing client budget limits vs freelancer scope, effort, and timeline constraints.
+    Evaluates original terms vs freelancer counter-offer and returns a balanced, actionable compromise as structured JSON.
+    """
+    from google import genai
+    import datetime
+
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in environment variables.")
+
+    client = genai.Client(api_key=api_key)
+    today_str = datetime.date.today().isoformat()
+
+    orig_title = original_bounty.get("title", "")
+    orig_amount = float(original_bounty.get("amount_usd", 0.0))
+    orig_criteria = original_bounty.get("acceptance_criteria", "")
+    orig_milestones = original_bounty.get("milestones", [])
+
+    negotiation_prompt = f"""You are the AI Scope Negotiation Middleman on MilestoneEscrow, an objective, professional arbitrator between Clients and Freelancers.
+
+Current Date: {today_str}
+
+=== CASE FILE: BOUNTY #{bounty_id} ===
+Project Title: {orig_title}
+Original Escrow Budget: ${orig_amount:.2f} USD
+Original Acceptance Criteria:
+{orig_criteria}
+
+Original Milestones:
+{json.dumps(orig_milestones, indent=2)}
+
+=== FREELANCER'S COUNTER-OFFER ===
+Freelancer: {freelancer_email or 'Contractor'}
+Counter-Offer Statement:
+\"\"\"{counter_offer}\"\"\"
+{f"Proposed Target Budget: ${proposed_amount:.2f} USD" if proposed_amount else ""}
+{f"Proposed Timeline Extension: {proposed_timeline}" if proposed_timeline else ""}
+
+=== ARBITRATION INSTRUCTIONS ===
+1. Act as a fair middleman. Protect the client from arbitrary price gouging while ensuring the freelancer is reasonably compensated for scope expansions, complex integrations, or tighter timelines.
+2. Formulate a balanced compromise:
+   - "compromise_amount_usd": fair compromise figure between client budget and freelancer request.
+   - "delta_amount": difference between compromise amount and original amount.
+   - "compromise_criteria": updated unified acceptance criteria clarifying edge cases and deliverables.
+   - "compromise_milestones": adjusted milestone schedule with realistic deadlines (YYYY-MM-DD) and rebalanced percentages (must sum strictly to 100.0).
+3. Output your response strictly as a raw JSON block at the very end in the exact format:
+{{
+  "summary": "1-2 sentence executive summary of the compromise agreement",
+  "original_amount_usd": {orig_amount},
+  "compromise_amount_usd": float,
+  "delta_amount": float,
+  "compromise_criteria": "string",
+  "compromise_milestones": [
+    {{
+      "description": "string",
+      "deadline": "YYYY-MM-DD",
+      "percentage": float,
+      "amount_usd": float
+    }}
+  ],
+  "reasoning": "Detailed economic and technical justification explaining why this compromise is fair and sustainable for both parties."
+}}
+
+Ensure the sum of milestone percentages strictly equals 100.0. Do not output any commentary outside the JSON block.
+"""
+
+    model_name = os.getenv("GEMINI_NEGOTIATE_MODEL", "gemini-1.5-pro")
+    print(f"[AI Negotiation Agent] Arbitrating scope counter-offer for Bounty #{bounty_id} using {model_name}...")
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=negotiation_prompt,
+        )
+    except Exception as err:
+        print(f"[AI Negotiation Agent Notice] Primary model error: {err}. Trying gemini-2.5-flash fallback...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=negotiation_prompt,
+        )
+
+    response_text = response.text or ""
+    print(f"[AI Negotiation Agent] Compromise received ({len(response_text)} chars). Parsing JSON...")
+    return _parse_agent_json(response_text)
