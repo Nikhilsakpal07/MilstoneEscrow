@@ -71,26 +71,25 @@ def _parse_agent_json(text: str) -> dict:
     raise ValueError("Could not extract a valid JSON object with 'passed' and 'feedback' keys")
 
 
-async def evaluate_submission(github_url: str, acceptance_criteria: str, bounty_id: int) -> dict:
+async def evaluate_submission(
+    github_url: str,
+    acceptance_criteria: str,
+    bounty_id: int,
+    milestone_id: int | None = None,
+    milestone_description: str | None = None,
+) -> dict:
     """
     Asynchronously evaluates a freelancer's code submission using the Gemini model.
-
-    Args:
-        github_url: URL to the freelancer's GitHub repository.
-        acceptance_criteria: Criteria to validate the submission against.
-        bounty_id: The ID of the bounty being evaluated.
-
-    Returns:
-        A dictionary with format: {"passed": bool, "feedback": str}
+    Supports both full bounty and milestone-specific evaluation.
     """
-    # 1. Define workspace and trajectory directories based on bounty_id
-    workspace_dir = os.path.abspath(f"./workspaces/bounty_{bounty_id}")
-    trajectory_dir = os.path.abspath(f"./trajectories/bounty_{bounty_id}")
+    scope_tag = f"m_{milestone_id}" if milestone_id is not None else "full"
+    workspace_dir = os.path.abspath(f"./workspaces/bounty_{bounty_id}_{scope_tag}")
+    trajectory_dir = os.path.abspath(f"./trajectories/bounty_{bounty_id}_{scope_tag}")
 
     os.makedirs(workspace_dir, exist_ok=True)
     os.makedirs(trajectory_dir, exist_ok=True)
 
-    # 2. Configure CapabilitiesConfig and LocalAgentConfig
+    # Configure CapabilitiesConfig and LocalAgentConfig
     capabilities = CapabilitiesConfig(
         enable_subagents=True,
     )
@@ -114,41 +113,42 @@ async def evaluate_submission(github_url: str, acceptance_criteria: str, bounty_
     try:
         config = LocalAgentConfig(**config_kwargs)
     except TypeError:
-        # Fallback to standard parameter names if signature differs
         config = LocalAgentConfig(
             workspace_dir=workspace_dir,
             trajectory_dir=trajectory_dir,
             capabilities=capabilities,
         )
 
-    # 3. Instantiate the Antigravity Agent
     try:
         agent_instance = Agent(config=config, model=model_name)
     except TypeError:
         agent_instance = Agent(config=config)
 
-    # 4. Formulate the prompt
-    prompt = f"""You are an automated QA evaluation agent. Evaluate the code submission for bounty #{bounty_id}.
+    milestone_info = (
+        f"\nMilestone Being Evaluated: Milestone #{milestone_id}\nMilestone Description:\n{milestone_description}\n"
+        if milestone_id is not None and milestone_description
+        else ""
+    )
 
+    prompt = f"""You are an automated QA evaluation agent. Evaluate the code submission for bounty #{bounty_id}.{milestone_info}
 GitHub Repository: {github_url}
 Acceptance Criteria:
 {acceptance_criteria}
 
 Instructions:
 1. Use the terminal to `git clone` the provided repository: {github_url} into your current workspace.
-2. Inspect the project and install standard dependencies (e.g., `pip install -r requirements.txt`, `npm install`, or the appropriate dependency manager).
+2. Inspect the project and install standard dependencies (e.g., `pip install -r requirements.txt`, `npm install`, or appropriate dependency manager).
 3. Run the test suite (e.g., `pytest`, `npm test`, `unittest`, or project-specific test runners).
-4. Evaluate the test output and codebase strictly against the provided acceptance criteria.
+4. Evaluate the test output and codebase strictly against the criteria.
 5. Output a raw JSON block at the very end of your response in the exact format:
 {{"passed": boolean, "feedback": "string"}}
 
-Ensure that "passed" is a boolean (true or false) indicating whether all tests and acceptance criteria were satisfied, and "feedback" is a clear summary of the evaluation results.
+Ensure that "passed" is a boolean (true or false) indicating whether all tests and criteria were satisfied, and "feedback" is a clear summary of the evaluation results.
 """
 
-    # 5. Execute agent with Gemini model
     response_text = ""
     try:
-        print(f"[QA Agent] Launching Antigravity QA Agent with Gemini ({model_name}) for bounty #{bounty_id}...")
+        print(f"[QA Agent] Launching Antigravity QA Agent with Gemini ({model_name}) for bounty #{bounty_id} ({scope_tag})...")
         if hasattr(agent_instance, "__aenter__"):
             async with agent_instance as agent:
                 if hasattr(agent, "run") and callable(getattr(agent, "run")):
@@ -191,11 +191,9 @@ Ensure that "passed" is a boolean (true or false) indicating whether all tests a
     except Exception as primary_err:
         print(f"[QA Agent Notice] Antigravity local harness error: {primary_err}. Attempting direct Gemini API evaluation fallback...")
 
-        # Fallback to direct Gemini Model API via google.genai
         try:
             from google import genai
 
-            # Clone or fetch repository
             clone_target = os.path.join(workspace_dir, "repo")
             if not os.path.exists(clone_target):
                 subprocess.run(
@@ -206,7 +204,6 @@ Ensure that "passed" is a boolean (true or false) indicating whether all tests a
                     timeout=60,
                 )
 
-            # Inspect repo files
             file_snippets = []
             scan_dir = clone_target if os.path.exists(clone_target) else workspace_dir
             for root, dirs, files in os.walk(scan_dir):
@@ -225,7 +222,8 @@ Ensure that "passed" is a boolean (true or false) indicating whether all tests a
             repo_context = "\n".join(file_snippets[:12]) if file_snippets else "No source files could be read."
 
             fallback_prompt = f"""You are an autonomous code QA auditor. Evaluate this repository submission.
-Bounty ID: {bounty_id}
+Bounty ID: {bounty_id} ({scope_tag})
+{milestone_info}
 GitHub Repository: {github_url}
 Acceptance Criteria:
 {acceptance_criteria}

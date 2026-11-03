@@ -56,10 +56,14 @@ def authorize_order(order_id: str) -> str:
     return data["purchase_units"][0]["payments"]["authorizations"][0]["id"]
 
 
-def capture_authorization(authorization_id: str) -> dict:
+def capture_authorization(
+    authorization_id: str,
+    amount: float | None = None,
+    is_final_capture: bool = True,
+) -> dict:
     """
-    Calls POST /v2/payments/authorizations/{authorization_id}/capture with
-    {"final_capture": True} to pull the funds.
+    Calls POST /v2/payments/authorizations/{authorization_id}/capture to pull the funds.
+    Supports full or partial captures.
     """
     token = get_access_token()
     url = f"{PAYPAL_BASE_URL}/v2/payments/authorizations/{authorization_id}/capture"
@@ -67,19 +71,29 @@ def capture_authorization(authorization_id: str) -> dict:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
     }
-    payload = {
-        "final_capture": True,
+    payload: dict = {
+        "final_capture": is_final_capture,
     }
+    if amount is not None:
+        payload["amount"] = {
+            "value": f"{amount:.2f}",
+            "currency_code": "USD",
+        }
 
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
     return response.json()
 
 
-def execute_payout(freelancer_email: str, amount: float, bounty_id: int) -> dict:
+def execute_payout(
+    freelancer_email: str,
+    amount: float,
+    bounty_id: int,
+    milestone_id: int | None = None,
+) -> dict:
     """
-    Calls POST /v1/payments/payouts to send the amount to the freelancer_email.
-    Generates a unique sender_batch_id using the current timestamp and bounty_id.
+    Calls POST /v1/payments/payouts to send the specific amount to the freelancer_email.
+    Generates a unique sender_batch_id using timestamp, bounty_id, and milestone_id.
     """
     token = get_access_token()
     url = f"{PAYPAL_BASE_URL}/v1/payments/payouts"
@@ -88,13 +102,25 @@ def execute_payout(freelancer_email: str, amount: float, bounty_id: int) -> dict
         "Authorization": f"Bearer {token}",
     }
 
-    sender_batch_id = f"bounty_{bounty_id}_{int(time.time())}"
+    # PayPal sender_batch_id has a max length limit of 30 characters
+    if milestone_id is not None:
+        sender_batch_id = f"b_{bounty_id}_m_{milestone_id}_{int(time.time())}"
+        email_subject = f"Milestone #{milestone_id} Escrow Payout (Bounty #{bounty_id})"
+        email_message = f"You received a payout of ${amount:.2f} USD for Milestone #{milestone_id} on Bounty #{bounty_id}."
+        note = f"Milestone #{milestone_id} payout for Bounty #{bounty_id}"
+        sender_item_id = f"item_{bounty_id}_m_{milestone_id}"
+    else:
+        sender_batch_id = f"bounty_{bounty_id}_{int(time.time())}"
+        email_subject = f"Payout for Bounty #{bounty_id}"
+        email_message = f"You have received a payout of ${amount:.2f} USD for completing bounty #{bounty_id}."
+        note = f"Payout for bounty #{bounty_id}"
+        sender_item_id = f"bounty_item_{bounty_id}"
 
     payload = {
         "sender_batch_header": {
             "sender_batch_id": sender_batch_id,
-            "email_subject": f"Payout for Bounty #{bounty_id}",
-            "email_message": f"You have received a payout of ${amount:.2f} USD for completing bounty #{bounty_id}.",
+            "email_subject": email_subject,
+            "email_message": email_message,
         },
         "items": [
             {
@@ -104,8 +130,8 @@ def execute_payout(freelancer_email: str, amount: float, bounty_id: int) -> dict
                     "currency": "USD",
                 },
                 "receiver": freelancer_email,
-                "note": f"Payout for bounty #{bounty_id}",
-                "sender_item_id": f"bounty_item_{bounty_id}",
+                "note": note,
+                "sender_item_id": sender_item_id,
             }
         ],
     }
@@ -113,4 +139,3 @@ def execute_payout(freelancer_email: str, amount: float, bounty_id: int) -> dict
     response = requests.post(url, headers=headers, json=payload)
     response.raise_for_status()
     return response.json()
-

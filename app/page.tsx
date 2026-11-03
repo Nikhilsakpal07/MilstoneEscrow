@@ -8,13 +8,24 @@ import { ColDef, ICellRendererParams } from "ag-grid-community";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
+interface Milestone {
+  id: number;
+  description: string;
+  deadline: string;
+  percentage: number;
+  amount_usd: number;
+  status: string;
+}
+
 interface Bounty {
   id: number;
   title: string;
   acceptance_criteria: string;
   amount_usd: number;
+  remaining_amount_usd: number;
   freelancer_email: string;
   status: string;
+  milestones: Milestone[];
 }
 
 // Custom Cell Renderer for color-coding bounty statuses
@@ -26,6 +37,9 @@ const StatusBadgeRenderer = (params: ICellRendererParams) => {
   switch (status) {
     case "LOCKED":
       badgeClasses = "bg-blue-50 text-blue-700 border-blue-200 ring-1 ring-blue-500/20";
+      break;
+    case "IN_PROGRESS":
+      badgeClasses = "bg-sky-50 text-sky-700 border-sky-200 ring-1 ring-sky-500/20";
       break;
     case "COMPLETED":
       badgeClasses = "bg-emerald-50 text-emerald-700 border-emerald-200 ring-1 ring-emerald-500/20";
@@ -45,6 +59,32 @@ const StatusBadgeRenderer = (params: ICellRendererParams) => {
     <div className="flex items-center h-full">
       <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide border ${badgeClasses}`}>
         {params.value}
+      </span>
+    </div>
+  );
+};
+
+// Milestone Progress Renderer
+const MilestoneProgressRenderer = (params: ICellRendererParams) => {
+  const milestones: Milestone[] = params.data?.milestones || [];
+  if (!milestones.length) return <span className="text-slate-400 text-xs">No milestones</span>;
+
+  const completed = milestones.filter((m) => m.status === "COMPLETED").length;
+  const total = milestones.length;
+  const isAllDone = completed === total;
+
+  return (
+    <div className="flex items-center h-full gap-2 text-xs">
+      <span
+        className={`px-2 py-0.5 rounded font-mono font-bold border ${
+          isAllDone
+            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+            : completed > 0
+            ? "bg-blue-50 text-blue-700 border-blue-200"
+            : "bg-slate-100 text-slate-600 border-slate-200"
+        }`}
+      >
+        {completed}/{total} Completed
       </span>
     </div>
   );
@@ -112,7 +152,7 @@ export default function DashboardPage() {
       },
       {
         field: "title",
-        headerName: "Title",
+        headerName: "Bounty Title",
         flex: 2,
         minWidth: 200,
         sortable: true,
@@ -121,19 +161,36 @@ export default function DashboardPage() {
       },
       {
         field: "amount_usd",
-        headerName: "Amount",
-        width: 130,
+        headerName: "Total Funds",
+        width: 120,
         sortable: true,
         filter: true,
         valueFormatter: (params) =>
           params.value != null ? `$${Number(params.value).toFixed(2)}` : "$0.00",
-        cellClass: "font-semibold text-emerald-600 font-mono",
+        cellClass: "font-mono font-semibold text-slate-700",
+      },
+      {
+        field: "remaining_amount_usd",
+        headerName: "Remaining Escrow",
+        width: 150,
+        sortable: true,
+        filter: true,
+        valueFormatter: (params) =>
+          params.value != null ? `$${Number(params.value).toFixed(2)}` : "$0.00",
+        cellClass: "font-mono font-bold text-emerald-600",
+      },
+      {
+        headerName: "Milestones",
+        width: 160,
+        cellRenderer: MilestoneProgressRenderer,
+        sortable: false,
+        filter: false,
       },
       {
         field: "freelancer_email",
         headerName: "Freelancer Email",
         flex: 1.5,
-        minWidth: 220,
+        minWidth: 200,
         sortable: true,
         filter: true,
         cellClass: "text-slate-600",
@@ -141,7 +198,7 @@ export default function DashboardPage() {
       {
         field: "status",
         headerName: "Status",
-        width: 150,
+        width: 140,
         cellRenderer: StatusBadgeRenderer,
         sortable: true,
         filter: true,
@@ -169,9 +226,9 @@ export default function DashboardPage() {
       {/* Top Banner & Stats */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Escrow Bounties Dashboard</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Milestone Escrow Dashboard</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Real-time status of milestone funds locked in PayPal Sandbox Escrow.
+            Track multi-phase milestone escrows, authorized PayPal funds, and AI verification status.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -198,7 +255,7 @@ export default function DashboardPage() {
             href="/create"
             className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-all"
           >
-            + New Bounty
+            + Create Bounty
           </Link>
         </div>
       </div>
@@ -221,7 +278,7 @@ export default function DashboardPage() {
         {loading ? (
           <div className="flex flex-col items-center justify-center h-80 gap-3">
             <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-slate-500">Loading bounties from backend...</p>
+            <p className="text-sm text-slate-500">Loading bounties &amp; milestones...</p>
           </div>
         ) : bounties.length === 0 ? (
           <div className="text-center py-16">
@@ -242,7 +299,7 @@ export default function DashboardPage() {
             </div>
             <h3 className="text-base font-semibold text-slate-800">No bounties found</h3>
             <p className="text-sm text-slate-500 mt-1 max-w-sm mx-auto">
-              Create your first freelance milestone escrow bounty to test PayPal authorization.
+              Create your first milestone escrow bounty with dynamic phase breakdowns.
             </p>
             <Link
               href="/create"
@@ -269,4 +326,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-
