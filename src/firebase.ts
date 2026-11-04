@@ -14,7 +14,7 @@ import {
 export type { User }
 
 // Helper to safely read env variables across Vite and Next.js
-const getEnvVar = (viteKey: string, nextKey: string, fallback: string): string => {
+const getEnvVar = (viteKey: string, nextKey: string, fallback: string = ""): string => {
   try {
     const metaEnv = (import.meta as any)?.env
     if (metaEnv && metaEnv[viteKey]) return metaEnv[viteKey]
@@ -27,43 +27,15 @@ const getEnvVar = (viteKey: string, nextKey: string, fallback: string): string =
   return fallback
 }
 
-// Configuration matching milestone-escrow-97e8f
+// Configuration loaded exclusively from environment variables (.env.local)
 const firebaseConfig = {
-  apiKey: getEnvVar(
-    "VITE_FIREBASE_API_KEY",
-    "NEXT_PUBLIC_FIREBASE_API_KEY",
-    "AIzaSyC8mIf5GOkJKqnsIJd99hOInVYPdFv9PEo"
-  ),
-  authDomain: getEnvVar(
-    "VITE_FIREBASE_AUTH_DOMAIN",
-    "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
-    "milestone-escrow-97e8f.firebaseapp.com"
-  ),
-  projectId: getEnvVar(
-    "VITE_FIREBASE_PROJECT_ID",
-    "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
-    "milestone-escrow-97e8f"
-  ),
-  storageBucket: getEnvVar(
-    "VITE_FIREBASE_STORAGE_BUCKET",
-    "NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET",
-    "milestone-escrow-97e8f.firebasestorage.app"
-  ),
-  messagingSenderId: getEnvVar(
-    "VITE_FIREBASE_MESSAGING_SENDER_ID",
-    "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
-    "790231518704"
-  ),
-  appId: getEnvVar(
-    "VITE_FIREBASE_APP_ID",
-    "NEXT_PUBLIC_FIREBASE_APP_ID",
-    "1:790231518704:web:95210afad1ab5942a46135"
-  ),
-  measurementId: getEnvVar(
-    "VITE_FIREBASE_MEASUREMENT_ID",
-    "NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID",
-    "G-FPM5PVFZZH"
-  ),
+  apiKey: getEnvVar("VITE_FIREBASE_API_KEY", "NEXT_PUBLIC_FIREBASE_API_KEY"),
+  authDomain: getEnvVar("VITE_FIREBASE_AUTH_DOMAIN", "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN"),
+  projectId: getEnvVar("VITE_FIREBASE_PROJECT_ID", "NEXT_PUBLIC_FIREBASE_PROJECT_ID"),
+  storageBucket: getEnvVar("VITE_FIREBASE_STORAGE_BUCKET", "NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET"),
+  messagingSenderId: getEnvVar("VITE_FIREBASE_MESSAGING_SENDER_ID", "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID"),
+  appId: getEnvVar("VITE_FIREBASE_APP_ID", "NEXT_PUBLIC_FIREBASE_APP_ID"),
+  measurementId: getEnvVar("VITE_FIREBASE_MEASUREMENT_ID", "NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID"),
 }
 
 // Initialize Firebase once
