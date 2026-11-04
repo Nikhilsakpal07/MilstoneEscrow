@@ -394,7 +394,16 @@ async def lifespan(app: FastAPI):
     logger.info("[MilestoneEscrow] Background Logistics Oracle Poller & Predictive Risk Scorer stopped.")
 
 
-app = FastAPI(title="MilestoneEscrow API", lifespan=lifespan)
+app = FastAPI(
+    title="MilestoneEscrow API",
+    description="Backend API for escrow and bounties",
+    version="1.0.0",
+    contact={
+        "name": "Nikhil Sakpal",
+        "email": "nikhilsakpal1426@gmail.com"
+    },
+    lifespan=lifespan,
+)
 
 # Configure CORS Middleware
 app.add_middleware(

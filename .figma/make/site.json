@@ -1,0 +1,10 @@
+{
+  "description": "Manage enterprise escrow contracts, AI audits, milestone payments, and multi-signature approvals in one platform for clients and administrators.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
