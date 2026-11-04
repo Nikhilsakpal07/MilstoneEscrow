@@ -1264,9 +1264,12 @@ function Landing({
           Milestone Escrow
         </button>
         <div className="public-actions">
+          <button className="public-ghost" onClick={onGoToDashboard}>
+            Live Dashboard
+          </button>
           {user ? (
             <button className="accent-button compact" onClick={onGoToDashboard}>
-              Go to Dashboard
+              Dashboard
             </button>
           ) : (
             <>
@@ -1294,10 +1297,17 @@ function Landing({
         <p>
           Automate milestone-based escrow releases with predictive risk scoring, anti-Sybil stylometric forensics, and autonomous multimodal proof verification.
         </p>
-        <button className="accent-button hero-cta" onClick={() => (user ? onGoToDashboard() : openAuth("signup"))}>
-          {user ? "Open Escrow Dashboard" : "Start Escrow Contract"}
-          <Icon name="arrow" size={18} />
-        </button>
+        <div style={{ display: "flex", gap: "14px", alignItems: "center" }}>
+          <button className="accent-button hero-cta" onClick={onGoToDashboard}>
+            Open Escrow Dashboard
+            <Icon name="arrow" size={18} />
+          </button>
+          {!user && (
+            <button className="public-ghost hero-cta" onClick={() => openAuth("signup")}>
+              Create Account
+            </button>
+          )}
+        </div>
       </section>
 
       <div className="landing-proof">
@@ -1512,8 +1522,8 @@ function Auth({
 /* =========================================================================
    ROOT APPLICATION SHELL
    ========================================================================= */
-export default function App() {
-  const [screen, setScreen] = useState<Screen>("landing")
+export default function App({ initialScreen = "landing" }: { initialScreen?: Screen }) {
+  const [screen, setScreen] = useState<Screen>(initialScreen)
   const [authMode, setAuthMode] = useState<"login" | "signup">("login")
   const [user, setUser] = useState<User | null>(null)
   const [bounties, setBounties] = useState<BountyData[]>([])
