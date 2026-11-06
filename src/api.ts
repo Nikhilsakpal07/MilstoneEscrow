@@ -36,121 +36,20 @@ export interface BountyData {
 }
 
 /**
- * Fetch all bounties from backend API with fallback mock data
+ * Fetch all bounties from backend API
  */
 export async function getBounties(): Promise<BountyData[]> {
   try {
     const res = await fetch(`${API_BASE}/api/bounties`, { method: "GET" })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    if (Array.isArray(data) && data.length > 0) {
+    if (Array.isArray(data)) {
       return data
     }
   } catch (err) {
-    console.warn("[API] Using offline fallback for bounties:", err)
+    console.warn("[API] Could not fetch bounties from backend:", err)
   }
-
-  // Fallback demo data if backend is offline
-  return [
-    {
-      id: 2401,
-      title: "Enterprise Payments API Migration",
-      acceptance_criteria: "Complete migration to new ISO payment gateway with 90%+ test coverage.",
-      amount_usd: 120000,
-      remaining_amount_usd: 96000,
-      freelancer_email: "alex.chen@fintech-dev.io",
-      status: "IN_PROGRESS",
-      risk_score: "LOW",
-      risk_percentage: 12,
-      risk_factors: ["Normal submission cadence", "Phase 1 complete"],
-      milestones: [
-        {
-          id: 1,
-          description: "Architecture & schema design",
-          deadline: "2026-11-10",
-          percentage: 20,
-          amount_usd: 24000,
-          status: "COMPLETED",
-          certificate_id: "ESC-9A8B7C",
-          has_certificate: true,
-        },
-        {
-          id: 2,
-          description: "Core gateway integration & webhook handling",
-          deadline: "2026-11-25",
-          percentage: 50,
-          amount_usd: 60000,
-          status: "IN_PROGRESS",
-        },
-        {
-          id: 3,
-          description: "End-to-end load tests & documentation",
-          deadline: "2026-12-15",
-          percentage: 30,
-          amount_usd: 36000,
-          status: "LOCKED",
-        },
-      ],
-    },
-    {
-      id: 2398,
-      title: "Humanitarian Medical Crates Consignment",
-      acceptance_criteria: "Deliver certified medical supplies to regional health center #4 with signed receipt.",
-      amount_usd: 48500,
-      remaining_amount_usd: 48500,
-      freelancer_email: "field.logistics@ngo-relief.org",
-      tracking_number: "TRACK-DELIVERED-001",
-      shipping_status: "DELIVERED",
-      status: "LOCKED",
-      risk_score: "LOW",
-      risk_percentage: 15,
-      milestones: [
-        {
-          id: 4,
-          description: "Cold-chain vaccine transport to regional clinic",
-          deadline: "2026-11-18",
-          percentage: 100,
-          amount_usd: 48500,
-          status: "LOCKED",
-          tracking_number: "TRACK-DELIVERED-001",
-          shipping_status: "DELIVERED",
-        },
-      ],
-    },
-    {
-      id: 2395,
-      title: "Real-time AI Audio Streaming Pipeline",
-      acceptance_criteria: "Bidirectional WebSocket with sub-200ms latency.",
-      amount_usd: 14500,
-      remaining_amount_usd: 7250,
-      freelancer_email: "dev@audio-stream.co",
-      status: "PENDING_ADMIN",
-      requires_human_approval: true,
-      risk_score: "MEDIUM",
-      risk_percentage: 45,
-      risk_factors: ["Pending multi-sig co-signer sign-off (> $5,000 threshold)"],
-      milestones: [
-        {
-          id: 5,
-          description: "WebSocket gateway & buffer queue",
-          deadline: "2026-11-05",
-          percentage: 50,
-          amount_usd: 7250,
-          status: "COMPLETED",
-          has_certificate: true,
-        },
-        {
-          id: 6,
-          description: "VAD & neural speech synthesis engine",
-          deadline: "2026-11-20",
-          percentage: 50,
-          amount_usd: 7250,
-          status: "PENDING_ADMIN",
-          requires_human_approval: true,
-        },
-      ],
-    },
-  ]
+  return []
 }
 
 /**

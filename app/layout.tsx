@@ -5,7 +5,7 @@ import Providers from "./Providers";
 export const metadata = {
   title: "Milestone Escrow - Autonomous AI Verification & Settlement Protocol",
   description:
-    "Enterprise-grade multi-milestone freelance escrow powered by PayPal Sandbox and Google Gemini 1.5 Pro.",
+    "Enterprise-grade multi-milestone freelance escrow powered by PayPal and Google Gemini 1.5 Pro.",
 };
 
 export default function RootLayout({

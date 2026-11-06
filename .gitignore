@@ -40,6 +40,10 @@ trajectories/
 certificates/*.pdf
 !certificates/.gitkeep
 
+# Documentation reports and generation scripts
+*.docx
+generate_system_architecture_report.py
+
 # OS generated files
 .DS_Store
 Thumbs.db

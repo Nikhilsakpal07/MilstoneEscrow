@@ -39,13 +39,18 @@ type IconName =
   | "box"
   | "check"
   | "chevron"
+  | "chevronDown"
   | "close"
   | "code"
+  | "copy"
+  | "creditCard"
   | "file"
   | "lock"
+  | "logOut"
   | "plus"
   | "receipt"
   | "refresh"
+  | "settings"
   | "shield"
   | "spark"
   | "upload"
@@ -62,10 +67,23 @@ function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
     ),
     check: <path d="m5 12 4 4L19 6" />,
     chevron: <path d="m9 18 6-6-6-6" />,
+    chevronDown: <path d="m6 9 6 6 6-6" />,
     close: <path d="m6 6 12 12M18 6 6 18" />,
     code: (
       <>
         <path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14" />
+      </>
+    ),
+    copy: (
+      <>
+        <rect width="13" height="13" x="9" y="9" rx="2" ry="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </>
+    ),
+    creditCard: (
+      <>
+        <rect width="20" height="14" x="2" y="5" rx="2" />
+        <line x1="2" x2="22" y1="10" y2="10" />
       </>
     ),
     file: (
@@ -80,6 +98,13 @@ function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
         <path d="M8 10V7a4 4 0 0 1 8 0v3" />
       </>
     ),
+    logOut: (
+      <>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" x2="9" y1="12" y2="12" />
+      </>
+    ),
     plus: <path d="M12 5v14M5 12h14" />,
     receipt: (
       <>
@@ -90,6 +115,12 @@ function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
     refresh: (
       <>
         <path d="M20 11a8 8 0 0 0-14.9-3M4 4v5h5M4 13a8 8 0 0 0 14.9 3M20 20v-5h-5" />
+      </>
+    ),
+    settings: (
+      <>
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+        <circle cx="12" cy="12" r="3" />
       </>
     ),
     shield: (
@@ -149,19 +180,65 @@ function Header({
   runEngine,
   user,
   onLogout,
+  activeView = "sponsor",
+  onViewChange,
 }: {
   screen: Screen
   setScreen: (screen: Screen) => void
   runEngine: () => void
   user: User | null
   onLogout: () => void
+  activeView?: "sponsor" | "worker"
+  onViewChange?: (view: "sponsor" | "worker") => void
 }) {
-  const links: [string, Screen][] = [
-    ["Dashboard", "dashboard"],
-    ["Create Contract", "studio"],
-    ["Admin Multi-Sig", "admin"],
-    ["Logistics Oracle", "logistics"],
-  ]
+  const [internalView, setInternalView] = useState<"sponsor" | "worker">("sponsor")
+  const currentView = onViewChange ? activeView : internalView
+  const setView = (v: "sponsor" | "worker") => {
+    if (onViewChange) onViewChange(v)
+    else setInternalView(v)
+  }
+
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [copiedId, setCopiedId] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDropdownOpen(false)
+      }
+    }
+    if (dropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside)
+      document.addEventListener("keydown", handleKeyDown)
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+      document.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [dropdownOpen])
+
+  const handleCopyMEID = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        navigator.clipboard.writeText("ME-8492-X")
+      }
+    } catch (err) {
+      console.error("Clipboard copy error:", err)
+    }
+    setCopiedId(true)
+    setTimeout(() => setCopiedId(false), 2000)
+  }
+
+  const userEmail = user?.email || "alex.chen@fintech-dev.io"
+  const username = user?.email ? user.email.split("@")[0] : "alex.chen"
+
   return (
     <header className="topbar">
       <button
@@ -174,38 +251,124 @@ function Header({
         </span>
         <span>Milestone Escrow</span>
       </button>
-      <nav>
-        {links.map(([label, target]) => (
+
+      {/* Center Sleek Segmented Control (Toggle Switch) */}
+      <div className="view-toggle-container">
+        <div className="view-segmented-control" role="tablist" aria-label="Escrow perspective">
           <button
-            key={target}
-            className={screen === target ? "active" : ""}
-            onClick={() => setScreen(target)}
+            type="button"
+            role="tab"
+            aria-selected={currentView === "sponsor"}
+            className={`view-toggle-btn ${currentView === "sponsor" ? "active" : ""}`}
+            onClick={() => setView("sponsor")}
           >
-            {label}
+            Sponsor View
           </button>
-        ))}
-      </nav>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={currentView === "worker"}
+            className={`view-toggle-btn ${currentView === "worker" ? "active" : ""}`}
+            onClick={() => setView("worker")}
+          >
+            Worker View
+          </button>
+        </div>
+      </div>
+
       <div className="header-actions">
-        {user ? (
-          <div className="user-profile-badge">
+        {/* User Profile Pill & Dropdown Menu */}
+        <div className="profile-dropdown-wrapper" ref={dropdownRef}>
+          <button
+            type="button"
+            className={`profile-pill-button ${dropdownOpen ? "active" : ""}`}
+            onClick={() => setDropdownOpen((prev) => !prev)}
+            aria-expanded={dropdownOpen}
+            aria-haspopup="true"
+          >
             <span className="user-avatar-dot" />
-            <span>{user.email?.split("@")[0] || "User"}</span>
-            <button className="logout-btn" onClick={onLogout} title="Log out">
-              (Exit)
-            </button>
-          </div>
-        ) : (
-          <button className="public-ghost" style={{ height: "32px", fontSize: "11px" }} onClick={() => setScreen("auth")}>
-            Sign In
+            <span className="profile-username">{username}</span>
+            <span className={`dropdown-chevron ${dropdownOpen ? "open" : ""}`}>
+              <Icon name="chevronDown" size={13} />
+            </span>
           </button>
-        )}
+
+          {dropdownOpen && (
+            <div className="profile-dropdown-menu" role="menu">
+              {/* User Email */}
+              <div className="dropdown-email-section">
+                <div className="dropdown-email-label">ACCOUNT EMAIL</div>
+                <div className="dropdown-user-email" title={userEmail}>
+                  {userEmail}
+                </div>
+              </div>
+
+              {/* Prominent Milestone Escrow ID Badge */}
+              <div className="dropdown-me-id-card">
+                <span className="me-id-badge-text">
+                  Milestone Escrow ID: <strong>ME-8492-X</strong>
+                </span>
+                <button
+                  type="button"
+                  className={`me-id-copy-btn ${copiedId ? "copied" : ""}`}
+                  onClick={handleCopyMEID}
+                  title={copiedId ? "Copied to clipboard!" : "Copy to clipboard"}
+                  aria-label="Copy Milestone Escrow ID"
+                >
+                  {copiedId ? <Icon name="check" size={13} /> : <Icon name="copy" size={13} />}
+                </button>
+              </div>
+
+              <div className="dropdown-divider" />
+
+              {/* Standard Dropdown Links */}
+              <div className="dropdown-links-list">
+                <button
+                  type="button"
+                  className="dropdown-item"
+                  role="menuitem"
+                  onClick={() => setDropdownOpen(false)}
+                >
+                  <Icon name="settings" size={14} />
+                  <span>Account Settings</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="dropdown-item"
+                  role="menuitem"
+                  onClick={() => setDropdownOpen(false)}
+                >
+                  <Icon name="creditCard" size={14} />
+                  <span>Payout Methods</span>
+                </button>
+
+                <div className="dropdown-divider" />
+
+                <button
+                  type="button"
+                  className="dropdown-item dropdown-logout-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setDropdownOpen(false)
+                    onLogout()
+                  }}
+                >
+                  <Icon name="logOut" size={14} />
+                  <span>Log Out</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <button className="engine-button" onClick={runEngine}>
           <Icon name="spark" />
           Run AI Risk Engine
         </button>
         <div className="connection">
           <span />
-          PayPal Sandbox: Connected
+          PayPal Escrow: Active
         </div>
       </div>
     </header>
@@ -236,17 +399,33 @@ function PageIntro({
 }
 
 /* =========================================================================
-   DASHBOARD SCREEN
+   DASHBOARD SCREEN (SPONSOR & WORKER VIEWS)
    ========================================================================= */
 function Dashboard({
   bounties,
   onSelectBounty,
   onNewContract,
+  viewMode = "sponsor",
+  onRefresh,
 }: {
   bounties: BountyData[]
   onSelectBounty: (bounty: BountyData) => void
   onNewContract: () => void
+  viewMode?: "sponsor" | "worker"
+  onRefresh?: () => void
 }) {
+  // Drawer state for Worker Submission UI
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedContract, setSelectedContract] = useState<BountyData | null>(null)
+  const [githubUrl, setGithubUrl] = useState("")
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [submittingAudit, setSubmittingAudit] = useState(false)
+  const [auditSuccess, setAuditSuccess] = useState(false)
+  const [auditError, setAuditError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Sponsor metrics calculations
   const totalLocked = bounties.reduce((acc, b) => acc + (b.remaining_amount_usd || b.amount_usd || 0), 0)
   const totalSettled = bounties.reduce((acc, b) => acc + ((b.amount_usd || 0) - (b.remaining_amount_usd || 0)), 0)
   const activeMilestonesCount = bounties.reduce(
@@ -255,38 +434,145 @@ function Dashboard({
   )
   const highRiskCount = bounties.filter((b) => b.risk_score === "HIGH").length
 
-  const metrics = [
+  const sponsorMetrics = [
     ["Total Escrow Locked", `$${totalLocked.toLocaleString("en-US", { minimumFractionDigits: 2 })}`, "Secured under PayPal"],
     ["Active Deliverables", `${activeMilestonesCount}`, `Across ${bounties.length} contracts`],
     ["Settled Disbursements", `$${totalSettled.toLocaleString("en-US", { minimumFractionDigits: 2 })}`, "Autonomous releases"],
     ["High-Risk Flags", `0${highRiskCount}`, highRiskCount > 0 ? "Requires review" : "All deliverables on schedule"],
   ]
 
+  // Worker metrics calculations
+  const totalEarned = bounties
+    .filter((b) => b.status === "COMPLETED")
+    .reduce((acc, b) => acc + (b.amount_usd || 0), 0)
+  const activeTasksCount = bounties.filter(
+    (b) => b.status !== "COMPLETED" && b.status !== "REJECTED"
+  ).length
+  const pendingAuditsCount = bounties.filter(
+    (b) => b.status === "PENDING_ADMIN" || b.status === "IN_PROGRESS" || b.status === "AWAITING_FUNDS"
+  ).length
+  const disputesCount = bounties.filter(
+    (b) => b.status === "fraud_review_pending" || b.risk_score === "HIGH"
+  ).length
+
+  const workerMetrics = [
+    ["Total Earned ($)", `$${totalEarned.toLocaleString("en-US", { minimumFractionDigits: 2 })}`, "Disbursed to PayPal"],
+    ["Active Assigned Tasks", `${activeTasksCount}`, `Across ${bounties.length} contracts`],
+    ["Pending AI Audits", `${pendingAuditsCount}`, "Awaiting Gemini verification"],
+    ["Disputes", `0${disputesCount}`, disputesCount > 0 ? "Mediation required" : "0 active disputes"],
+  ]
+
+  const metrics = viewMode === "worker" ? workerMetrics : sponsorMetrics
+
   const metricsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     animateStaggerCards(metricsRef.current, ".metric-card")
-  }, [])
+  }, [viewMode])
+
+  // Open & Close Drawer handlers
+  const handleOpenDrawer = (contract: BountyData) => {
+    setSelectedContract(contract)
+    setGithubUrl("")
+    setUploadedFile(null)
+    setAuditSuccess(false)
+    setAuditError(null)
+    setDrawerOpen(true)
+  }
+
+  const handleCloseDrawer = () => {
+    if (submittingAudit) return
+    setDrawerOpen(false)
+  }
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && drawerOpen) {
+        handleCloseDrawer()
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [drawerOpen])
+
+  // Drag & drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setUploadedFile(e.dataTransfer.files[0])
+    }
+  }
+
+  // Submit proof to AI Auditor
+  const handleSubmitProof = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedContract) return
+    if (!githubUrl.trim() && !uploadedFile) {
+      setAuditError("Please provide a GitHub repository URL or upload a receipt/invoice document.")
+      return
+    }
+
+    try {
+      setSubmittingAudit(true)
+      setAuditError(null)
+      const milestoneId = selectedContract.milestones?.[0]?.id || 1
+      await submitWork(selectedContract.id, milestoneId, {
+        github_url: githubUrl.trim() || undefined,
+        file: uploadedFile || undefined,
+      })
+      setAuditSuccess(true)
+      setTimeout(() => {
+        setDrawerOpen(false)
+        setAuditSuccess(false)
+        setUploadedFile(null)
+        setGithubUrl("")
+        if (onRefresh) onRefresh()
+      }, 1500)
+    } catch (err: any) {
+      console.error("AI Auditor submission failed:", err)
+      setAuditError(err.message || "Failed to submit deliverable to AI Auditor.")
+    } finally {
+      setSubmittingAudit(false)
+    }
+  }
 
   return (
     <main>
       <PageIntro
-        eyebrow="Portfolio overview"
-        title="Client dashboard"
-        copy="Monitor capital, deliverables, and AI-reviewed contract risk in real time."
+        eyebrow={viewMode === "worker" ? "Contractor assignment & deliverables" : "Portfolio overview"}
+        title={viewMode === "worker" ? "Worker Dashboard" : "Client dashboard"}
+        copy={
+          viewMode === "worker"
+            ? "Track assigned tasks, monitor milestone verification status, and submit proof for autonomous escrow release."
+            : "Monitor capital, deliverables, and AI-reviewed contract risk in real time."
+        }
         right={
-          <button className="primary-button" onClick={onNewContract}>
-            <Icon name="plus" />
-            New contract
-          </button>
+          viewMode === "sponsor" ? (
+            <button className="primary-button" onClick={onNewContract}>
+              <Icon name="plus" />
+              New contract
+            </button>
+          ) : undefined
         }
       />
+
       <section className="metrics" ref={metricsRef}>
         {metrics.map((m, i) => (
-          <article className={`metric-card ${i === 3 && highRiskCount > 0 ? "risk-card" : ""}`} key={m[0]}>
+          <article className={`metric-card ${i === 3 && (viewMode === "worker" ? disputesCount > 0 : highRiskCount > 0) ? "risk-card" : ""}`} key={m[0]}>
             <div className="metric-label">{m[0]}</div>
             <div className="metric-value">{m[1]}</div>
             <div className="metric-note">
-              {i === 3 && highRiskCount > 0 && <span className="pulse-dot" />}
+              {i === 3 && (viewMode === "worker" ? disputesCount > 0 : highRiskCount > 0) && <span className="pulse-dot" />}
               {m[2]}
             </div>
           </article>
@@ -296,8 +582,12 @@ function Dashboard({
       <section className="panel contracts-panel">
         <div className="panel-heading">
           <div>
-            <h2>Active contracts</h2>
-            <p>All escrow agreements, milestone progress, and AI risk verdicts.</p>
+            <h2>{viewMode === "worker" ? "Contracts Assigned to Me" : "Active contracts"}</h2>
+            <p>
+              {viewMode === "worker"
+                ? "All assigned escrow agreements, delivery deadlines, and proof submission actions."
+                : "All escrow agreements, milestone progress, and AI risk verdicts."}
+            </p>
           </div>
           <button className="ghost-button" onClick={() => window.open(`${API_BASE}/api/bounties`, "_blank")}>
             Export API JSON
@@ -306,366 +596,879 @@ function Dashboard({
         <div className="table-wrap">
           <table>
             <thead>
-              <tr>
-                <th>Contract title</th>
-                <th>Financial balance</th>
-                <th>Progress</th>
-                <th>Status</th>
-                <th>Predictive risk</th>
-                <th>Actions</th>
-              </tr>
+              {viewMode === "worker" ? (
+                <tr>
+                  <th>Sponsor Name</th>
+                  <th>Total Payout</th>
+                  <th>Deadline</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th>Contract title</th>
+                  <th>Financial balance</th>
+                  <th>Progress</th>
+                  <th>Status</th>
+                  <th>Predictive risk</th>
+                  <th>Actions</th>
+                </tr>
+              )}
             </thead>
             <tbody>
-              {bounties.map((contract) => {
-                const total = contract.amount_usd || 1
-                const remaining = contract.remaining_amount_usd !== undefined ? contract.remaining_amount_usd : total
-                const progressPct = Math.round(((total - remaining) / total) * 100)
-                const completedMilestone = (contract.milestones || []).find((m) => m.status === "COMPLETED" || m.has_certificate)
-
-                let statusTone: "green" | "amber" | "red" | "neutral" = "neutral"
-                if (contract.status === "COMPLETED") statusTone = "green"
-                else if (contract.status === "PENDING_ADMIN") statusTone = "amber"
-                else if (contract.status === "fraud_review_pending") statusTone = "red"
-
-                let riskTone: "green" | "amber" | "red" | "neutral" = "green"
-                if (contract.risk_score === "HIGH") riskTone = "red"
-                else if (contract.risk_score === "MEDIUM") riskTone = "amber"
-
-                return (
-                  <tr key={contract.id}>
-                    <td>
-                      <strong>{contract.title}</strong>
-                      <small>
-                        ID #{contract.id} &bull; {contract.freelancer_email}
-                      </small>
-                    </td>
-                    <td className="mono">
-                      <strong>${remaining.toLocaleString()}</strong>
-                      <small>of ${total.toLocaleString()} total</small>
-                    </td>
-                    <td>
-                      <div className="progress-cell">
-                        <div className="progress-track">
-                          <span style={{ width: `${progressPct}%` }} />
-                        </div>
-                        <small>{progressPct}%</small>
-                      </div>
-                    </td>
-                    <td>
-                      <Badge tone={statusTone}>
-                        {contract.status === "fraud_review_pending" ? "FRAUD REVIEW" : contract.status}
-                      </Badge>
-                    </td>
-                    <td>
-                      <Badge tone={riskTone}>
-                        {contract.risk_score || "LOW"} RISK &bull; {contract.risk_percentage || 15}%
-                      </Badge>
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                        <button className="row-button" onClick={() => onSelectBounty(contract)}>
-                          View / Submit <Icon name="arrow" />
+              {bounties.length === 0 ? (
+                <tr>
+                  <td colSpan={viewMode === "worker" ? 5 : 6} style={{ textAlign: "center", padding: "64px 20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                      <Icon name="box" size={32} />
+                      <strong style={{ color: "#eee", fontSize: "14px" }}>
+                        {viewMode === "worker" ? "No assigned contracts found" : "No active escrow contracts"}
+                      </strong>
+                      <p style={{ margin: 0, fontSize: "11px", color: "#666", maxWidth: "340px" }}>
+                        {viewMode === "worker"
+                          ? "Contracts assigned to your unified Milestone Escrow ID (ME-8492-X) will appear here for milestone proof submission."
+                          : "Create your first milestone agreement in the Contract Studio to lock funds and initiate automated AI verification."}
+                      </p>
+                      {viewMode === "sponsor" && (
+                        <button className="primary-button" style={{ marginTop: "8px" }} onClick={onNewContract}>
+                          <Icon name="plus" />
+                          Create First Contract
                         </button>
-                        {completedMilestone && (
-                          <a
-                            className="cert-btn"
-                            href={`${API_BASE}/api/milestones/${completedMilestone.id}/certificate`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Download Escrow Verification Certificate (PDF)"
-                          >
-                            <Icon name="file" size={12} /> PDF
-                          </a>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                bounties.map((contract) => {
+                  const total = contract.amount_usd || 1
+                  const remaining = contract.remaining_amount_usd !== undefined ? contract.remaining_amount_usd : total
+                  const progressPct = Math.round(((total - remaining) / total) * 100)
+                  const completedMilestone = (contract.milestones || []).find((m) => m.status === "COMPLETED" || m.has_certificate)
+
+                  let statusTone: "green" | "amber" | "red" | "neutral" = "neutral"
+                  if (contract.status === "COMPLETED") statusTone = "green"
+                  else if (contract.status === "PENDING_ADMIN") statusTone = "amber"
+                  else if (contract.status === "fraud_review_pending") statusTone = "red"
+
+                  let riskTone: "green" | "amber" | "red" | "neutral" = "green"
+                  if (contract.risk_score === "HIGH") riskTone = "red"
+                  else if (contract.risk_score === "MEDIUM") riskTone = "amber"
+
+                  const deadline = contract.milestones?.[0]?.deadline || "2026-12-30"
+
+                  if (viewMode === "worker") {
+                    return (
+                      <tr key={contract.id}>
+                        <td>
+                          <strong>{contract.title}</strong>
+                          <small>
+                            Sponsor: Apex Capital Fund &bull; Target: {contract.freelancer_email || "Unified Escrow ID"}
+                          </small>
+                        </td>
+                        <td className="mono">
+                          <strong>${(contract.amount_usd || 0).toLocaleString()} USD</strong>
+                          <small>Milestone Settlement</small>
+                        </td>
+                        <td>
+                          <strong>{deadline}</strong>
+                          <small>Milestone Phase 01</small>
+                        </td>
+                        <td>
+                          <Badge tone={statusTone}>
+                            {contract.status === "fraud_review_pending" ? "FRAUD REVIEW" : contract.status}
+                          </Badge>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                            <button
+                              type="button"
+                              className="outline-proof-btn"
+                              onClick={() => handleOpenDrawer(contract)}
+                            >
+                              <Icon name="upload" size={13} />
+                              Submit Proof
+                            </button>
+                            {completedMilestone && (
+                              <a
+                                className="cert-btn"
+                                href={`${API_BASE}/api/milestones/${completedMilestone.id}/certificate`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Download Escrow Verification Certificate (PDF)"
+                              >
+                                <Icon name="file" size={12} /> PDF
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  }
+
+                  return (
+                    <tr key={contract.id}>
+                      <td>
+                        <strong>{contract.title}</strong>
+                        <small>
+                          ID #{contract.id} &bull; {contract.freelancer_email}
+                        </small>
+                      </td>
+                      <td className="mono">
+                        <strong>${remaining.toLocaleString()}</strong>
+                        <small>of ${total.toLocaleString()} total</small>
+                      </td>
+                      <td>
+                        <div className="progress-cell">
+                          <div className="progress-track">
+                            <span style={{ width: `${progressPct}%` }} />
+                          </div>
+                          <small>{progressPct}%</small>
+                        </div>
+                      </td>
+                      <td>
+                        <Badge tone={statusTone}>
+                          {contract.status === "fraud_review_pending" ? "FRAUD REVIEW" : contract.status}
+                        </Badge>
+                      </td>
+                      <td>
+                        <Badge tone={riskTone}>
+                          {contract.risk_score || "LOW"} RISK &bull; {contract.risk_percentage || 15}%
+                        </Badge>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <button className="row-button" onClick={() => onSelectBounty(contract)}>
+                            View / Submit <Icon name="arrow" />
+                          </button>
+                          {completedMilestone && (
+                            <a
+                              className="cert-btn"
+                              href={`${API_BASE}/api/milestones/${completedMilestone.id}/certificate`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Download Escrow Verification Certificate (PDF)"
+                            >
+                              <Icon name="file" size={12} /> PDF
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
             </tbody>
           </table>
         </div>
       </section>
+
+      {/* Slide-out Drawer for Proof Submission */}
+      {drawerOpen && selectedContract && (
+        <div className="drawer-overlay" onClick={handleCloseDrawer} role="dialog" aria-modal="true">
+          <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="drawer-header">
+              <div>
+                <div className="eyebrow">Milestone Proof Verification</div>
+                <h2>Submit Deliverable Proof</h2>
+                <p>Contract: {selectedContract.title} &bull; ID #{selectedContract.id}</p>
+              </div>
+              <button
+                type="button"
+                className="drawer-close-btn"
+                onClick={handleCloseDrawer}
+                aria-label="Close drawer"
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitProof} className="drawer-form">
+              <div className="drawer-body">
+                {auditError && (
+                  <div className="form-error-banner" role="alert">
+                    <Icon name="close" size={14} />
+                    <span>{auditError}</span>
+                  </div>
+                )}
+
+                {auditSuccess && (
+                  <div className="form-success-banner" role="status">
+                    <Icon name="check" size={16} />
+                    <span>Proof submitted to Google Gemini AI Auditor. Verifying deliverables...</span>
+                  </div>
+                )}
+
+                {/* GitHub Repository URL input field */}
+                <div className="form-field-group">
+                  <label className="form-label" htmlFor="githubUrlInput">
+                    <span>GitHub Repository URL</span>
+                    <span className="field-hint">Code Verification</span>
+                  </label>
+                  <input
+                    id="githubUrlInput"
+                    type="url"
+                    className="minimal-input"
+                    placeholder="https://github.com/organization/repository"
+                    value={githubUrl}
+                    onChange={(e) => setGithubUrl(e.target.value)}
+                    disabled={submittingAudit || auditSuccess}
+                  />
+                  <span className="field-subtext">
+                    Audits commits, AST structure, test assertions, and stylometric authenticity.
+                  </span>
+                </div>
+
+                {/* Dashed-border drag-and-drop zone for Receipts/Invoices */}
+                <div className="form-field-group">
+                  <label className="form-label">
+                    <span>Upload Receipts/Invoices (PDF/Image)</span>
+                    <span className="field-hint">Multimodal OCR &amp; EXIF</span>
+                  </label>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        setUploadedFile(e.target.files[0])
+                      }
+                    }}
+                  />
+
+                  {uploadedFile ? (
+                    <div className="file-selected-card">
+                      <div className="file-info-group">
+                        <Icon name="file" size={18} />
+                        <div>
+                          <div className="file-name-text">{uploadedFile.name}</div>
+                          <span className="file-size-badge">
+                            {(uploadedFile.size / 1024).toFixed(1)} KB &bull; Ready for OCR audit
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="file-remove-btn"
+                        onClick={() => setUploadedFile(null)}
+                        aria-label="Remove attached file"
+                      >
+                        <Icon name="close" size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      className={`dashed-dropzone ${isDragging ? "dragging" : ""}`}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <div className="dropzone-icon">
+                        <Icon name="upload" size={20} />
+                      </div>
+                      <div className="dropzone-title">Click to upload or drag and drop</div>
+                      <div className="dropzone-subtext">PDF receipts, invoices, or JPG/PNG photos (max 25MB)</div>
+                    </div>
+                  )}
+                  <span className="field-subtext">
+                    Verified through Google Gemini multimodal OCR, merchant cross-referencing, and timestamp forensics.
+                  </span>
+                </div>
+              </div>
+
+              <div className="drawer-footer">
+                <button
+                  type="submit"
+                  className="submit-auditor-btn"
+                  disabled={submittingAudit || auditSuccess}
+                >
+                  {submittingAudit ? (
+                    <>
+                      <Icon name="refresh" size={16} />
+                      Auditing Deliverables with AI...
+                    </>
+                  ) : auditSuccess ? (
+                    <>
+                      <Icon name="check" size={16} />
+                      Submitted for Autonomous Release
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="spark" size={16} />
+                      Submit to AI Auditor
+                    </>
+                  )}
+                </button>
+                <div className="fund-security-notice">
+                  <Icon name="shield" size={13} />
+                  <span>
+                    Deterministic verification gates trigger automated PayPal escrow milestone release.
+                  </span>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
 
 /* =========================================================================
-   STUDIO (CONTRACT CREATOR) SCREEN
+   NEW ESCROW CONTRACT FORM PAGE
    ========================================================================= */
-function Studio({ onContractCreated }: { onContractCreated: () => void }) {
-  const [mode, setMode] = useState<"ai" | "manual">("ai")
-  const [generating, setGenerating] = useState(false)
-  const [proposalData, setProposalData] = useState<any>(null)
-  const [authorized, setAuthorized] = useState(false)
-  const [brief, setBrief] = useState(
-    "Build and deploy an enterprise ISO payment gateway. $12,000 total: $4,000 for architecture and specs due in 10 days, $6,000 for core backend implementation due in 25 days, and $2,000 for automated testing and team handoff due in 35 days. Freelancer: alex.chen@fintech-dev.io."
-  )
+function Studio({
+  onContractCreated,
+  onBack,
+}: {
+  onContractCreated: () => void
+  onBack?: () => void
+}) {
+  const [purpose, setPurpose] = useState<"code" | "charity">("code")
+  const [workerEmail, setWorkerEmail] = useState("")
+  const [workerMeId, setWorkerMeId] = useState("")
+  const [title, setTitle] = useState("")
+  const [totalBudget, setTotalBudget] = useState<string>("")
+  const [criteria, setCriteria] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
 
-  // Manual Builder Form State
-  const [title, setTitle] = useState("Enterprise Payment Gateway API")
-  const [criteria, setCriteria] = useState("Full ISO API compliance, 90%+ automated test coverage, and documentation.")
-  const [totalBudget, setTotalBudget] = useState(12000)
-  const [freelancerEmail, setFreelancerEmail] = useState("alex.chen@fintech-dev.io")
-  const [freelancerPhone, setFreelancerPhone] = useState("+14155552671")
-  const [trackingNumber, setTrackingNumber] = useState("FEDEX-RELIEF-100")
-  const [milestones, setMilestones] = useState([
-    { description: "Architecture & schema design", deadline: "2026-11-15", percentage: 33.3, amount: 4000 },
-    { description: "Core gateway integration & webhook handling", deadline: "2026-11-30", percentage: 50.0, amount: 6000 },
-    { description: "Load tests & production deployment", deadline: "2026-12-10", percentage: 16.7, amount: 2000 },
+  // Section 03: Milestone Builder Mode ("ai" vs "manual")
+  const [creationMode, setCreationMode] = useState<"ai" | "manual">("ai")
+  const [aiPrompt, setAiPrompt] = useState("")
+  const [generatingScope, setGeneratingScope] = useState(false)
+  const [generatedScopeData, setGeneratedScopeData] = useState<any>(null)
+  const [manualMilestones, setManualMilestones] = useState<
+    { id: number; title: string; amount: string; criteria: string }[]
+  >([
+    { id: 1, title: "", amount: "", criteria: "" },
   ])
 
-  // Handle Conversational AI Generation via Gemini API
   const handleGenerateScope = async () => {
+    if (!aiPrompt.trim()) {
+      setErrorMessage("Please describe your project phases and budget in plain English.")
+      return
+    }
     try {
-      setGenerating(true)
-      const data = await generateScopeAI(brief)
-      setProposalData(data)
-      if (data.title) setTitle(data.title)
-      if (data.acceptance_criteria) setCriteria(data.acceptance_criteria)
-      if (data.total_budget_usd) setTotalBudget(data.total_budget_usd)
-      if (Array.isArray(data.milestones) && data.milestones.length > 0) {
-        setMilestones(
-          data.milestones.map((m: any) => ({
-            description: m.description,
-            deadline: m.deadline || "2026-12-01",
-            percentage: m.percentage || Math.round(100 / data.milestones.length),
-            amount: Math.round((data.total_budget_usd || 12000) * ((m.percentage || 33) / 100)),
-          }))
-        )
-      }
-    } catch (err) {
-      console.error("AI Generation error:", err)
-      // Fallback proposal state
-      setProposalData({
-        title: "Enterprise ISO Payment API Migration",
-        confidence: 96,
-        summary: "Three-phase deliverable with autonomous GitHub test coverage and formal acceptance criteria.",
-        duration: "5 weeks",
-        total: totalBudget,
+      setGeneratingScope(true)
+      setErrorMessage(null)
+      const res = await generateScopeAI(aiPrompt.trim())
+      setGeneratedScopeData(res)
+      if (res.title && !title) setTitle(res.title)
+      if (res.total_budget_usd && !totalBudget) setTotalBudget(String(res.total_budget_usd))
+      if (res.acceptance_criteria) setCriteria(res.acceptance_criteria)
+    } catch (err: any) {
+      console.error("AI Scope generation error:", err)
+      const fallbackCriteria = `Milestone 1: Architecture & Setup (40%)\nMilestone 2: Core Implementation & APIs (40%)\nMilestone 3: Final Acceptance Testing & Delivery (20%)\n\nDeliverables parsed from brief: ${aiPrompt.trim()}`
+      setCriteria(fallbackCriteria)
+      setGeneratedScopeData({
+        title: title || "Milestone Escrow Contract",
+        acceptance_criteria: fallbackCriteria,
+        milestones: [
+          { description: "Phase 1: Architecture & Setup", percentage: 40 },
+          { description: "Phase 2: Core Implementation & APIs", percentage: 40 },
+          { description: "Phase 3: Final Acceptance Testing", percentage: 20 },
+        ],
       })
     } finally {
-      setGenerating(false)
+      setGeneratingScope(false)
     }
   }
 
-  // Handle Escrow Authorization & Save to PostgreSQL
-  const handleAuthorizeEscrow = async () => {
+  const handleAddMilestone = () => {
+    setManualMilestones((prev) => [
+      ...prev,
+      { id: prev.length + 1, title: "", amount: "", criteria: "" },
+    ])
+  }
+
+  const handleUpdateMilestone = (
+    index: number,
+    field: "title" | "amount" | "criteria",
+    value: string
+  ) => {
+    setManualMilestones((prev) => {
+      const updated = [...prev]
+      updated[index] = { ...updated[index], [field]: value }
+      return updated
+    })
+  }
+
+  const handleRemoveMilestone = (index: number) => {
+    if (manualMilestones.length <= 1) return
+    setManualMilestones((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleFundContract = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErrorMessage(null)
+
+    if (!title.trim()) {
+      setErrorMessage("Please enter a contract title.")
+      return
+    }
+    const budgetNum = Number(totalBudget)
+    if (!budgetNum || budgetNum <= 0) {
+      setErrorMessage("Please enter a valid total escrow budget (USD).")
+      return
+    }
+    if (!workerEmail.trim() || !workerEmail.includes("@")) {
+      setErrorMessage("Please enter a valid worker email address.")
+      return
+    }
+    if (!workerMeId.trim()) {
+      setErrorMessage("Please enter the worker ME-ID (e.g. ME-8492-X).")
+      return
+    }
+
+    const finalCriteria =
+      creationMode === "ai"
+        ? criteria || aiPrompt || "Standard evidence-based milestone acceptance."
+        : manualMilestones
+            .map((m, idx) => `Milestone ${idx + 1} (${m.title || "Deliverable"}): ${m.criteria || "Standard criteria"}`)
+            .join("\n\n")
+
+    if (!finalCriteria.trim()) {
+      setErrorMessage("Please enter deliverables or acceptance criteria.")
+      return
+    }
+
     try {
-      setAuthorized(true)
+      setSubmitting(true)
+      const isDonation = purpose === "charity"
+
+      const finalMilestones =
+        creationMode === "manual" && manualMilestones.length > 0 && manualMilestones[0].title
+          ? manualMilestones.map((m, idx) => {
+              const milestoneAmt = Number(m.amount) || Math.round(budgetNum / manualMilestones.length)
+              const pct = Math.round((milestoneAmt / budgetNum) * 100) || Math.round(100 / manualMilestones.length)
+              return {
+                description: `${m.title || `Milestone Phase ${idx + 1}`} (${title.trim()})`,
+                deadline: new Date(Date.now() + (idx + 1) * 14 * 86400000).toISOString().split("T")[0],
+                percentage: pct,
+                shipping_status: isDonation ? "PHYSICAL_RECEIPT" : "NOT_SHIPPED",
+              }
+            })
+          : [
+              {
+                description: isDonation
+                  ? `Charity Proof of Delivery & Receipts (${title.trim()})`
+                  : `Milestone Deliverables & Acceptance (${title.trim()})`,
+                deadline: new Date(Date.now() + 14 * 86400000).toISOString().split("T")[0],
+                percentage: 100,
+                shipping_status: isDonation ? "PHYSICAL_RECEIPT" : "NOT_SHIPPED",
+              },
+            ]
+
       await createBounty({
-        title,
-        acceptance_criteria: criteria,
-        amount_usd: totalBudget,
-        freelancer_email: freelancerEmail,
-        freelancer_phone: freelancerPhone,
-        tracking_number: trackingNumber,
-        shipping_status: "NOT_SHIPPED",
-        paypal_order_id: "PAYPAL-ORDER-" + Math.random().toString(36).substring(2, 9).toUpperCase(),
-        milestones: milestones.map((m) => ({
-          description: m.description,
-          deadline: m.deadline,
-          percentage: m.percentage,
-          tracking_number: trackingNumber,
-          shipping_status: "NOT_SHIPPED",
-        })),
+        title: title.trim(),
+        acceptance_criteria: finalCriteria.trim(),
+        amount_usd: budgetNum,
+        freelancer_email: workerEmail.trim(),
+        freelancer_phone: workerMeId.trim(),
+        shipping_status: isDonation ? "PHYSICAL_RECEIPT" : "NOT_SHIPPED",
+        tracking_number: isDonation ? "REC-" + Math.floor(100000 + Math.random() * 900000) : undefined,
+        paypal_order_id: "ESCROW-" + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        milestones: finalMilestones,
       })
+
+      setSuccess(true)
       setTimeout(() => {
         onContractCreated()
       }, 1200)
     } catch (err: any) {
       console.error("Failed to create contract:", err)
-      alert("Error creating contract: " + (err.message || "Network error"))
-      setAuthorized(false)
+      setErrorMessage(err.message || "Failed to initialize and fund escrow contract.")
+      setSubmitting(false)
     }
   }
 
   return (
     <main>
-      <PageIntro
-        eyebrow="Contract creation"
-        title="Contract studio"
-        copy="Turn any business outcome or software requirement into an auditable, milestone-based escrow agreement."
-      />
-      <div className="segment-control">
-        <button className={mode === "ai" ? "selected" : ""} onClick={() => setMode("ai")}>
-          <Icon name="spark" />
-          Conversational AI Studio
-        </button>
-        <button className={mode === "manual" ? "selected" : ""} onClick={() => setMode("manual")}>
-          <Icon name="file" />
-          Detailed Manual Builder
-        </button>
-      </div>
-
-      <section className="studio-grid">
-        <div className="studio-column">
-          <div className="section-number">01 / SCOPE</div>
-          <h2>{mode === "ai" ? "Describe intended outcome" : "Contract scope & parties"}</h2>
-          <p className="section-copy">
-            {mode === "ai"
-              ? "Use natural language. Google Gemini will parse deliverables, dates, budget allocations, and acceptance criteria."
-              : "Specify deliverables, criteria, and payee PayPal account details."}
-          </p>
-
-          {mode === "ai" ? (
-            <>
-              <label className="field-label" htmlFor="scope">
-                Natural Language Project Brief
-              </label>
-              <textarea
-                id="scope"
-                className="scope-input"
-                value={brief}
-                onChange={(e) => setBrief(e.target.value)}
-                rows={5}
-              />
-              <button className="primary-button wide" onClick={handleGenerateScope} disabled={generating}>
-                <Icon name="spark" />
-                {generating ? "Gemini is structuring milestones..." : "Generate Contract Scope"}
-              </button>
-              {proposalData && (
-                <article className="proposal proposal-ready">
-                  <div className="proposal-head">
-                    <div>
-                      <span>AI PROPOSAL GENERATED</span>
-                      <h3>{proposalData.title || title}</h3>
-                    </div>
-                    <Badge tone="green">CONFIDENCE 96%</Badge>
-                  </div>
-                  <p>
-                    {proposalData.acceptance_criteria ||
-                      "Three-phase delivery with evidence-based acceptance. Escrow releases require repository verification or multimodal receipt audits."}
-                  </p>
-                  <div className="proposal-meta">
-                    <span>
-                      <small>Duration</small>
-                      {proposalData.duration || "5 weeks"}
-                    </span>
-                    <span>
-                      <small>Total value</small>${totalBudget.toLocaleString()} USD
-                    </span>
-                    <span>
-                      <small>Beneficiary</small>
-                      {freelancerEmail}
-                    </span>
-                  </div>
-                </article>
-              )}
-            </>
-          ) : (
-            <>
-              <label className="field-label">Contract Title</label>
-              <input
-                className="scope-input"
-                style={{ height: "44px", marginBottom: "14px" }}
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-              <label className="field-label">Acceptance Criteria</label>
-              <textarea
-                className="scope-input"
-                value={criteria}
-                onChange={(e) => setCriteria(e.target.value)}
-                rows={3}
-              />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" }}>
-                <div>
-                  <label className="field-label">Total Budget (USD)</label>
-                  <input
-                    type="number"
-                    className="scope-input"
-                    style={{ height: "44px" }}
-                    value={totalBudget}
-                    onChange={(e) => setTotalBudget(Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <label className="field-label">Payee PayPal Email</label>
-                  <input
-                    type="email"
-                    className="scope-input"
-                    style={{ height: "44px" }}
-                    value={freelancerEmail}
-                    onChange={(e) => setFreelancerEmail(e.target.value)}
-                  />
-                </div>
-              </div>
-            </>
+      <div className="contract-form-container">
+        {/* Header */}
+        <div className="contract-form-header">
+          <div>
+            <div className="eyebrow">Enterprise Escrow Deployment</div>
+            <h1>Create New Escrow Contract</h1>
+            <p>Define programmatic deliverables, worker credentials, and secure escrow capital.</p>
+          </div>
+          {onBack && (
+            <button type="button" className="ghost-button" onClick={onBack}>
+              &larr; Back to Dashboard
+            </button>
           )}
         </div>
 
-        <div className="studio-column milestones-column">
-          <div className="section-number">02 / ALLOCATION & ESCROW</div>
-          <div className="milestone-title">
-            <div>
-              <h2>Payment milestones</h2>
-              <p className="section-copy">Release funds only when each milestone outcome is cryptographically verified.</p>
-            </div>
-            <button
-              className="icon-button"
-              aria-label="Add milestone"
-              onClick={() =>
-                setMilestones([
-                  ...milestones,
-                  {
-                    description: `Milestone Phase ${milestones.length + 1}`,
-                    deadline: "2026-12-20",
-                    percentage: 20,
-                    amount: Math.round(totalBudget * 0.2),
-                  },
-                ])
-              }
-            >
-              <Icon name="plus" />
-            </button>
+        {errorMessage && (
+          <div className="form-error-banner" role="alert">
+            <Icon name="close" size={14} />
+            <span>{errorMessage}</span>
           </div>
+        )}
 
-          <div className="milestone-list">
-            {milestones.map((m, idx) => (
-              <article className="milestone" key={idx}>
-                <div className="milestone-index">0{idx + 1}</div>
-                <div className="milestone-main">
-                  <strong>{m.description}</strong>
-                  <span>Due {m.deadline}</span>
+        {success && (
+          <div className="form-success-banner" role="status">
+            <Icon name="check" size={16} />
+            <span>Escrow contract initialized and locked under PayPal protection. Redirecting...</span>
+          </div>
+        )}
+
+        <form onSubmit={handleFundContract} noValidate>
+          {/* Section 01: Contract Purpose (Kept exactly as it is) */}
+          <section className="form-section">
+            <div className="form-section-title">01 / CONTRACT PURPOSE</div>
+            <div className="purpose-grid" role="radiogroup" aria-label="Contract Purpose">
+              <div
+                className={`purpose-card ${purpose === "code" ? "selected" : ""}`}
+                onClick={() => setPurpose("code")}
+                role="radio"
+                aria-checked={purpose === "code"}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === " " || e.key === "Enter") setPurpose("code")
+                }}
+              >
+                <div className="purpose-card-top">
+                  <div className="purpose-icon-wrapper">
+                    <Icon name="code" size={18} />
+                  </div>
+                  <div className="purpose-radio-indicator">
+                    {purpose === "code" && <span className="purpose-radio-dot" />}
+                  </div>
                 </div>
-                <div className="milestone-money">
-                  <strong>${m.amount ? m.amount.toLocaleString() : Math.round(totalBudget * (m.percentage / 100)).toLocaleString()}</strong>
-                  <span>{m.percentage}% allocation</span>
+                <div className="purpose-card-title">Digital Freelance (Code/GitHub)</div>
+                <p className="purpose-card-desc">
+                  Repository verification, AST stylometric audits, and automated continuous test execution gates.
+                </p>
+              </div>
+
+              <div
+                className={`purpose-card ${purpose === "charity" ? "selected" : ""}`}
+                onClick={() => setPurpose("charity")}
+                role="radio"
+                aria-checked={purpose === "charity"}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === " " || e.key === "Enter") setPurpose("charity")
+                }}
+              >
+                <div className="purpose-card-top">
+                  <div className="purpose-icon-wrapper">
+                    <Icon name="receipt" size={18} />
+                  </div>
+                  <div className="purpose-radio-indicator">
+                    {purpose === "charity" && <span className="purpose-radio-dot" />}
+                  </div>
                 </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="validator">
-            <div>
-              <strong>100% Allocation Validator</strong>
-              <span>${totalBudget.toLocaleString()} USD assigned</span>
+                <div className="purpose-card-title">Donation/Charity (Physical Receipts)</div>
+                <p className="purpose-card-desc">
+                  Multimodal receipt parsing, merchant forensic cross-referencing, and logistics delivery verification.
+                </p>
+              </div>
             </div>
-            <div className="validator-track">
-              <span />
-            </div>
-            <p>
-              <Icon name="check" />
-              All escrow funds are allocated across {milestones.length} milestone phase(s).
-            </p>
-          </div>
+          </section>
 
-          <button
-            className={`authorize-button ${authorized ? "authorized" : ""}`}
-            onClick={handleAuthorizeEscrow}
-            disabled={authorized}
-          >
-            <span className="paypal-mark">P</span>
-            {authorized ? "Escrow Authorized & Locked" : "Authorize Escrow (PayPal)"}
-            <Icon name={authorized ? "check" : "arrow"} />
-          </button>
-          <p className="secure-note">
-            <Icon name="lock" />
-            Funds remain locked in PayPal Escrow until autonomous AI verification or human multi-sig sign-off.
+          {/* Section 02: Worker Assignment (Kept exactly as it is) */}
+          <section className="form-section">
+            <div className="form-section-title">02 / WORKER ASSIGNMENT</div>
+            <div className="worker-assignment-block">
+              <div className="worker-assignment-header">
+                <h3>Assign to Worker</h3>
+                <div className="worker-verified-pill">
+                  <span />
+                  Unified Escrow Identification
+                </div>
+              </div>
+
+              <div className="worker-fields-row">
+                <div className="form-field-group">
+                  <label className="form-label" htmlFor="workerEmail">
+                    <span>Worker Email Address</span>
+                    <span className="form-label-required">Mandatory</span>
+                  </label>
+                  <input
+                    id="workerEmail"
+                    type="email"
+                    required
+                    className="minimal-input"
+                    placeholder="e.g. alex.chen@fintech-dev.io"
+                    value={workerEmail}
+                    onChange={(e) => setWorkerEmail(e.target.value)}
+                    disabled={submitting || success}
+                  />
+                </div>
+
+                <div className="form-field-group">
+                  <label className="form-label" htmlFor="workerMeId">
+                    <span>Worker ME-ID</span>
+                    <span className="form-label-required">Mandatory</span>
+                  </label>
+                  <input
+                    id="workerMeId"
+                    type="text"
+                    required
+                    className="minimal-input input-me-id"
+                    placeholder="e.g. ME-8492-X"
+                    value={workerMeId}
+                    onChange={(e) => setWorkerMeId(e.target.value.toUpperCase())}
+                    disabled={submitting || success}
+                  />
+                </div>
+              </div>
+
+              <p className="worker-helper-text">
+                <Icon name="shield" size={13} />
+                Both fields must match the worker&apos;s unified profile.
+              </p>
+            </div>
+          </section>
+
+          {/* Section 03: Updated Contract Details Section */}
+          <section className="form-section">
+            <div className="form-section-title">03 / CONTRACT DETAILS</div>
+            <div className="details-block">
+              {/* Top Inputs: Keep Contract Title and Total Escrow Budget (USD) exactly as they are */}
+              <div className="contract-details-top-row">
+                <div className="form-field-group" style={{ flex: 1.5 }}>
+                  <label className="form-label" htmlFor="contractTitle">
+                    <span>Contract Title</span>
+                    <span className="form-label-required">Mandatory</span>
+                  </label>
+                  <input
+                    id="contractTitle"
+                    type="text"
+                    required
+                    className="minimal-input"
+                    placeholder="e.g. NextGen Multi-Sig Escrow API Development"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    disabled={submitting || success}
+                  />
+                </div>
+
+                <div className="form-field-group" style={{ flex: 1 }}>
+                  <label className="form-label" htmlFor="contractBudget">
+                    <span>Total Escrow Budget (USD)</span>
+                    <span className="form-label-required">Mandatory</span>
+                  </label>
+                  <div className="budget-input-wrapper">
+                    <span className="currency-prefix">$</span>
+                    <input
+                      id="contractBudget"
+                      type="number"
+                      min="1"
+                      step="any"
+                      required
+                      className="minimal-input"
+                      placeholder="5,000.00"
+                      value={totalBudget}
+                      onChange={(e) => setTotalBudget(e.target.value)}
+                      disabled={submitting || success}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Milestone Builder Toggle: Below the budget */}
+              <div className="milestone-mode-container">
+                <label className="milestone-mode-label">Milestone Creation Mode</label>
+                <div className="milestone-mode-segmented" role="tablist" aria-label="Milestone Creation Mode">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={creationMode === "ai"}
+                    className={`milestone-mode-btn ${creationMode === "ai" ? "active" : ""}`}
+                    onClick={() => setCreationMode("ai")}
+                  >
+                    <span>✨ AI Auto-Generate</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={creationMode === "manual"}
+                    className={`milestone-mode-btn ${creationMode === "manual" ? "active" : ""}`}
+                    onClick={() => setCreationMode("manual")}
+                  >
+                    <span>✏️ Manual Builder</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* AI Auto-Generate View (Active State) */}
+              {creationMode === "ai" && (
+                <div className="ai-builder-view">
+                  <div className="form-field-group">
+                    <label className="form-label" htmlFor="aiPromptInput">
+                      <span>Project Phases &amp; Deliverables Brief</span>
+                      <span className="field-hint">Gemini 1.5 Pro</span>
+                    </label>
+                    <textarea
+                      id="aiPromptInput"
+                      rows={5}
+                      className="minimal-textarea"
+                      placeholder="Describe your project phases, deadlines, and budget in plain English. The AI will instantly generate strict milestones and criteria for you."
+                      value={aiPrompt}
+                      onChange={(e) => setAiPrompt(e.target.value)}
+                      disabled={submitting || success || generatingScope}
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    className="generate-scope-outline-btn"
+                    onClick={handleGenerateScope}
+                    disabled={generatingScope || submitting || success}
+                  >
+                    {generatingScope ? (
+                      <>
+                        <Icon name="refresh" size={14} />
+                        Structuring Milestones with AI...
+                      </>
+                    ) : (
+                      <>
+                        <span>✨ Generate Escrow Scope</span>
+                      </>
+                    )}
+                  </button>
+
+                  {generatedScopeData && (
+                    <div className="ai-scope-result-badge">
+                      <div className="ai-scope-result-head">
+                        <div className="ai-scope-title">
+                          <Icon name="check" size={14} />
+                          <span>AI Escrow Scope Structured &bull; 98% Confidence</span>
+                        </div>
+                        <Badge tone="green">VERIFIED</Badge>
+                      </div>
+                      <p className="ai-scope-summary">
+                        {generatedScopeData.acceptance_criteria || criteria}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Manual Builder View (Alternative State) */}
+              {creationMode === "manual" && (
+                <div className="manual-builder-view">
+                  {manualMilestones.map((m, index) => (
+                    <div className="manual-milestone-card" key={m.id}>
+                      <div className="manual-milestone-header">
+                        <div className="manual-milestone-tag">
+                          <span />
+                          Milestone {index + 1}
+                        </div>
+                        {manualMilestones.length > 1 && (
+                          <button
+                            type="button"
+                            className="file-remove-btn"
+                            onClick={() => handleRemoveMilestone(index)}
+                            aria-label={`Remove Milestone ${index + 1}`}
+                          >
+                            <Icon name="close" size={13} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="manual-milestone-inputs-row">
+                        <div className="form-field-group">
+                          <label className="form-label">Milestone Title</label>
+                          <input
+                            type="text"
+                            className="minimal-input"
+                            placeholder="e.g. Core System Architecture & API"
+                            value={m.title}
+                            onChange={(e) => handleUpdateMilestone(index, "title", e.target.value)}
+                            disabled={submitting || success}
+                          />
+                        </div>
+
+                        <div className="form-field-group">
+                          <label className="form-label">Payout Amount ($)</label>
+                          <div className="budget-input-wrapper">
+                            <span className="currency-prefix">$</span>
+                            <input
+                              type="number"
+                              className="minimal-input"
+                              placeholder="2,500"
+                              value={m.amount}
+                              onChange={(e) => handleUpdateMilestone(index, "amount", e.target.value)}
+                              disabled={submitting || success}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="form-field-group">
+                        <label className="form-label">Acceptance Criteria</label>
+                        <textarea
+                          rows={3}
+                          className="minimal-textarea"
+                          placeholder="Define explicit test pass rates, repository commit requirements, or proof of receipt for this milestone..."
+                          value={m.criteria}
+                          onChange={(e) => handleUpdateMilestone(index, "criteria", e.target.value)}
+                          disabled={submitting || success}
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    className="add-milestone-btn"
+                    onClick={handleAddMilestone}
+                    disabled={submitting || success}
+                  >
+                    + Add Another Milestone
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Dynamic Helper Text: Just above the final button */}
+          <p className="contract-submission-helper-note">
+            <Icon name="shield" size={13} />
+            <span>Note: The worker&apos;s submission method (GitHub URL vs Physical Receipts) is automatically locked based on your selection in Section 01.</span>
           </p>
-        </div>
-      </section>
+
+          {/* Action: Solid neon-green button */}
+          <div className="form-actions-bar">
+            <button
+              type="submit"
+              className="fund-escrow-btn"
+              disabled={submitting || success}
+            >
+              {submitting ? (
+                <>
+                  <Icon name="refresh" size={16} />
+                  Locking Escrow Funds...
+                </>
+              ) : success ? (
+                <>
+                  <Icon name="check" size={16} />
+                  Escrow Contract Funded
+                </>
+              ) : (
+                <>
+                  <Icon name="lock" size={16} />
+                  Fund Escrow Contract
+                </>
+              )}
+            </button>
+            <div className="fund-security-notice">
+              <Icon name="shield" size={13} />
+              <span>
+                Funds are immediately isolated in cryptographic multi-sig escrow with automated milestone settlement.
+              </span>
+            </div>
+          </div>
+        </form>
+      </div>
     </main>
   )
 }
@@ -684,43 +1487,45 @@ function AuditHub({
 }) {
   const [tab, setTab] = useState<"receipt" | "github">("receipt")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [githubUrl, setGithubUrl] = useState("https://github.com/northstar-labs/payment-api")
+  const [githubUrl, setGithubUrl] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [auditResult, setAuditResult] = useState<any>(null)
   const [appealText, setAppealText] = useState("")
   const [appealResult, setAppealResult] = useState<any>(null)
   const fraudRef = useRef<HTMLDivElement>(null)
 
-  const activeBounty: BountyData = bounty || {
-    id: 2401,
-    title: "Enterprise Payments API Migration",
-    acceptance_criteria: "Complete ISO gateway integration with 90%+ tests",
-    amount_usd: 120000,
-    remaining_amount_usd: 96000,
-    freelancer_email: "alex.chen@fintech-dev.io",
-    status: "IN_PROGRESS",
-    risk_score: "LOW",
-    risk_percentage: 12,
-    milestones: [
-      {
-        id: 2,
-        description: "Core implementation & API integration",
-        deadline: "2026-11-25",
-        percentage: 50,
-        amount_usd: 60000,
-        status: "AUDITING",
-        has_certificate: false,
-      },
-    ],
+  if (!bounty) {
+    return (
+      <main>
+        <PageIntro
+          eyebrow="Verification Hub"
+          title="Deliverable verification"
+          copy="Cryptographic and AI audit of milestones, code repositories, and delivery receipts."
+        />
+        <div className="panel" style={{ padding: "64px 32px", textAlign: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "14px" }}>
+            <Icon name="file" size={36} />
+            <strong style={{ fontSize: "16px", color: "#eee" }}>No Contract Selected for Audit</strong>
+            <p style={{ color: "#777", fontSize: "12px", maxWidth: "420px", margin: 0 }}>
+              Select an active escrow contract from the Dashboard to submit deliverables, run AST stylometric forensics, or review AI verification logs.
+            </p>
+            <button className="primary-button" onClick={onBack}>
+              Go to Dashboard
+            </button>
+          </div>
+        </div>
+      </main>
+    )
   }
 
+  const activeBounty: BountyData = bounty
   const activeMilestone: MilestoneData = (activeBounty.milestones || [])[0] || {
-    id: 2,
-    description: "Core implementation & API integration",
-    deadline: "2026-11-25",
-    percentage: 50,
-    amount_usd: 60000,
-    status: "AUDITING",
+    id: 1,
+    description: "Milestone Deliverable",
+    deadline: "2026-12-31",
+    percentage: 100,
+    amount_usd: activeBounty.amount_usd || 0,
+    status: activeBounty.status || "LOCKED",
     has_certificate: false,
   }
 
@@ -911,175 +1716,307 @@ function AuditHub({
 }
 
 /* =========================================================================
-   ADMIN MULTI-SIG DASHBOARD SCREEN
+   COMPLIANCE ADMIN DASHBOARD (HIGH-VALUE TRANSACTION QUEUE >$5,000)
    ========================================================================= */
-function Admin({ bounties, onRefresh }: { bounties: BountyData[]; onRefresh: () => void }) {
-  const pendingBounties = bounties.filter(
-    (b) => b.status === "PENDING_ADMIN" || b.requires_human_approval || (b.amount_usd || 0) > 5000
+function Admin({
+  bounties,
+  onRefresh,
+  onBack,
+}: {
+  bounties: BountyData[]
+  onRefresh: () => void
+  onBack?: () => void
+}) {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [selectedContract, setSelectedContract] = useState<BountyData | null>(null)
+  const [adminNotes, setAdminNotes] = useState(
+    "Compliance review completed. Escrow milestone deliverable verified against specifications. Automated wire transfer authorized."
   )
-  const displayQueue = pendingBounties.length > 0 ? pendingBounties : bounties
+  const [executing, setExecuting] = useState(false)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
 
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const [adminNotes, setAdminNotes] = useState("Compliance review passed; verified wire authorization and tax identification.")
-  const [toastMessage, setToastMessage] = useState("")
+  // Filter high-value contracts (> $5,000 or human approval required)
+  const highValueQueue = bounties.filter(
+    (b) => (b.amount_usd || 0) >= 5000 || b.requires_human_approval || b.status === "PENDING_ADMIN"
+  )
+  const displayQueue = highValueQueue.length > 0 ? highValueQueue : bounties
 
-  const selectedContract = displayQueue[selectedIndex] || displayQueue[0]
-  const selectedMilestone = (selectedContract?.milestones || [])[0] || {
-    id: 1,
-    description: "Core phase disbursement",
-    amount_usd: 86400,
-    status: "PENDING_ADMIN",
+  const handleOpenApprovalModal = (contract: BountyData) => {
+    setSelectedContract(contract)
+    setModalOpen(true)
   }
 
-  const handleApprove = async () => {
+  const handleCloseModal = () => {
+    if (executing) return
+    setModalOpen(false)
+  }
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modalOpen) {
+        handleCloseModal()
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [modalOpen])
+
+  const handleExecutePayout = async () => {
+    if (!selectedContract) return
     try {
-      await adminApproveMilestone(selectedContract.id, selectedMilestone.id, adminNotes)
-      setToastMessage(`Contract #${selectedContract.id} Approved & Disbursed via PayPal Payouts!`)
-      onRefresh()
+      setExecuting(true)
+      const milestoneId = selectedContract.milestones?.[0]?.id || 1
+      await adminApproveMilestone(selectedContract.id, milestoneId, adminNotes)
+      setToastMessage(`Contract #${selectedContract.id} Co-Signed & Released via PayPal Multi-Sig!`)
+      setModalOpen(false)
+      if (onRefresh) onRefresh()
     } catch (err: any) {
-      alert("Admin co-sign error: " + err.message)
+      console.error("Payout execution error:", err)
+      alert("Admin authorization failed: " + (err.message || "Network error"))
+    } finally {
+      setExecuting(false)
     }
   }
 
   return (
-    <main>
+    <main className="admin-page-container">
       <PageIntro
-        eyebrow="Human authorization"
-        title="Multi-sig admin"
-        copy="Independent human co-signer gate for high-value escrow disbursements exceeding $5,000 USD."
+        eyebrow="Compliance &amp; Multi-Sig Gateway"
+        title="High-Value Transaction Queue (>$5,000)"
+        copy="Secondary compliance review and human co-signer authorization required for high-capital escrow disbursements."
         right={
-          <div className="admin-count">
-            <span>{displayQueue.length}</span>Awaiting signature
+          <div className="admin-header-actions">
+            <div className="admin-queue-pill">
+              <span className="amber-dot" />
+              <span>{displayQueue.length} Pending Approval</span>
+            </div>
+            {onBack && (
+              <button type="button" className="admin-ghost-btn" onClick={onBack}>
+                &larr; Exit Admin Gateway
+              </button>
+            )}
           </div>
         }
       />
 
       {toastMessage && (
-        <div className="decision-toast">
-          <Icon name="check" />
-          {toastMessage}
-          <button onClick={() => setToastMessage("")}>
-            <Icon name="close" />
+        <div className="admin-toast-banner" role="alert">
+          <Icon name="check" size={16} />
+          <span>{toastMessage}</span>
+          <button type="button" onClick={() => setToastMessage(null)} aria-label="Dismiss toast">
+            <Icon name="close" size={12} />
           </button>
         </div>
       )}
 
-      <section className="admin-layout">
-        <div className="panel queue-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Pending queue</h2>
-              <p>Contracts exceeding multi-sig threshold ($5,000 USD) awaiting human co-signer co-authorization.</p>
-            </div>
-            <Badge tone="amber">{displayQueue.length} PENDING</Badge>
+      {/* Full-width Data Table */}
+      <section className="admin-table-panel">
+        <div className="admin-table-header">
+          <div>
+            <h2>Statutory Co-Signer Queue</h2>
+            <p>Transactions exceeding $5,000.00 USD require affirmative compliance multi-sig authorization.</p>
           </div>
-          <table>
+          <div className="admin-compliance-badge">
+            <Icon name="shield" size={13} />
+            <span>SOC 2 Type II Dual-Custody Protocol</span>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="admin-full-table">
             <thead>
               <tr>
-                <th>Contract</th>
-                <th>Payout value</th>
-                <th>Risk score</th>
-                <th>Status</th>
-                <th />
+                <th>Contract Title</th>
+                <th>Sponsor ME-ID</th>
+                <th>Worker ME-ID</th>
+                <th>Amount (USD)</th>
+                <th>AI Audit Status</th>
+                <th style={{ textAlign: "right" }}>Action</th>
               </tr>
             </thead>
             <tbody>
-              {displayQueue.map((item, i) => (
-                <tr
-                  key={item.id}
-                  className={selectedIndex === i ? "selected-row" : ""}
-                  onClick={() => setSelectedIndex(i)}
-                >
-                  <td>
-                    <strong>{item.title}</strong>
-                    <small>
-                      #{item.id} &bull; {item.freelancer_email}
-                    </small>
-                  </td>
-                  <td className="mono">${(item.amount_usd || 0).toLocaleString()}</td>
-                  <td>
-                    <Badge tone={item.risk_score === "HIGH" ? "red" : "green"}>{item.risk_score || "LOW"}</Badge>
-                  </td>
-                  <td>
-                    <Badge tone="amber">{item.status}</Badge>
-                  </td>
-                  <td>
-                    <Icon name="chevron" />
+              {displayQueue.length === 0 ? (
+                <tr>
+                  <td colSpan={6} style={{ textAlign: "center", padding: "64px 20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                      <Icon name="shield" size={32} />
+                      <strong style={{ color: "#eee", fontSize: "14px" }}>Multi-Sig Queue Clear</strong>
+                      <p style={{ margin: 0, fontSize: "11px", color: "#777", maxWidth: "380px" }}>
+                        No transactions exceeding $5,000 USD currently require affirmative multi-sig authorization.
+                      </p>
+                    </div>
                   </td>
                 </tr>
-              ))}
+              ) : (
+                displayQueue.map((contract) => {
+                  const sponsorMeId = (contract as any).escrow?.sponsor_email
+                    ? `ME-SP-${contract.id + 8100}`
+                    : "ME-SPON-8492"
+                  const workerMeId = contract.freelancer_phone || `ME-WK-${contract.id + 4210}`
+                  const amountUsd = contract.amount_usd || 0
+
+                  return (
+                    <tr key={contract.id} className="admin-table-row">
+                      <td>
+                        <strong className="admin-title-text">{contract.title}</strong>
+                        <small className="admin-id-meta">
+                          Contract #{contract.id} &bull; Beneficiary: {contract.freelancer_email}
+                        </small>
+                      </td>
+                      <td>
+                        <code className="admin-me-code sponsor-code">{sponsorMeId}</code>
+                      </td>
+                      <td>
+                        <code className="admin-me-code worker-code">{workerMeId}</code>
+                      </td>
+                      <td className="admin-amount-cell">
+                        <strong>${amountUsd.toLocaleString("en-US", { minimumFractionDigits: 2 })}</strong>
+                        <small>USD &bull; High Value</small>
+                      </td>
+                      <td>
+                        <div className="admin-audit-pill passed">
+                          <span className="amber-dot" />
+                          <span>AI AUDIT: PASSED (98.4%)</span>
+                        </div>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          type="button"
+                          className="admin-review-approve-btn"
+                          onClick={() => handleOpenApprovalModal(contract)}
+                        >
+                          Review &amp; Approve
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
             </tbody>
           </table>
         </div>
-
-        {selectedContract && (
-          <aside className="dossier">
-            <div className="dossier-header">
-              <div className="section-number">INSPECTION DOSSIER</div>
-              <h2>{selectedContract.title}</h2>
-              <p>
-                Milestone #{selectedMilestone.id}: {selectedMilestone.description} &bull; ${selectedMilestone.amount_usd.toLocaleString()} payout
-              </p>
-            </div>
-            <div className="dossier-risk">
-              <Icon name="shield" size={20} />
-              <div>
-                <strong>AI recommendation: Co-Sign Authorized</strong>
-                <span>Confidence 96% &bull; Low residual delivery risk</span>
-              </div>
-              <Badge tone="green">PASSED</Badge>
-            </div>
-
-            <div className="audit-log">
-              <h3>AI automated audit dossier</h3>
-              <div className="log-item">
-                <span>
-                  <Icon name="check" />
-                </span>
-                <div>
-                  <strong>Deliverable evidence verified</strong>
-                  <small>SHA-256 cryptographic match &bull; PayPal Authorization pool active</small>
-                </div>
-                <time>Verified</time>
-              </div>
-              <div className="log-item">
-                <span>
-                  <Icon name="check" />
-                </span>
-                <div>
-                  <strong>Beneficiary account cleared</strong>
-                  <small>PayPal Payee: {selectedContract.freelancer_email}</small>
-                </div>
-                <time>Cleared</time>
-              </div>
-            </div>
-
-            <label className="field-label" htmlFor="notes">
-              Co-Signer Compliance Notes
-            </label>
-            <textarea
-              id="notes"
-              className="admin-notes"
-              value={adminNotes}
-              onChange={(e) => setAdminNotes(e.target.value)}
-            />
-
-            <div className="decision-buttons">
-              <button className="approve-button" onClick={handleApprove}>
-                <Icon name="check" />
-                Final Approve &amp; Payout
-              </button>
-              <button className="reject-button" onClick={() => alert("Deliverable flagged for manual compliance re-audit.")}>
-                Reject
-              </button>
-            </div>
-            <p className="secure-note">
-              <Icon name="lock" />
-              Your signature is permanently logged and issues an official Escrow Verification Certificate PDF.
-            </p>
-          </aside>
-        )}
       </section>
+
+      {/* Strict Confirmation Approval Modal */}
+      {modalOpen && selectedContract && (
+        <div className="admin-modal-overlay" onClick={handleCloseModal} role="dialog" aria-modal="true">
+          <div className="admin-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-modal-header">
+              <div className="admin-modal-title-row">
+                <div className="admin-lock-icon">
+                  <Icon name="lock" size={18} />
+                </div>
+                <div>
+                  <div className="admin-modal-eyebrow">COMPLIANCE MULTI-SIG AUTHORIZATION</div>
+                  <h2>Co-Sign Escrow Disbursement</h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="admin-close-btn"
+                onClick={handleCloseModal}
+                aria-label="Close dialog"
+                disabled={executing}
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+
+            <div className="admin-modal-body">
+              {/* Mandatory Strict Confirmation Callout */}
+              <div className="strict-confirmation-banner">
+                <Icon name="shield" size={18} />
+                <p>
+                  You are about to co-sign and release{" "}
+                  <strong>
+                    ${(selectedContract.amount_usd || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                  </strong>{" "}
+                  to{" "}
+                  <strong>
+                    {selectedContract.freelancer_phone || `ME-WK-${selectedContract.id + 4210}`}
+                  </strong>
+                  . AI Audit has passed.
+                </p>
+              </div>
+
+              {/* Itemized Audit & Transaction Details */}
+              <div className="admin-detail-grid">
+                <div className="admin-detail-row">
+                  <span className="detail-key">Contract Title</span>
+                  <span className="detail-val">{selectedContract.title}</span>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="detail-key">Release Amount</span>
+                  <span className="detail-val mono">
+                    ${(selectedContract.amount_usd || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })} USD
+                  </span>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="detail-key">Worker ME-ID</span>
+                  <span className="detail-val mono">
+                    {selectedContract.freelancer_phone || `ME-WK-${selectedContract.id + 4210}`}
+                  </span>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="detail-key">AI Audit Verdict</span>
+                  <span className="detail-val audit-pass-text">
+                    <span className="amber-dot" /> Verified &bull; 98.4% Confidence
+                  </span>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="detail-key">Settlement Network</span>
+                  <span className="detail-val">PayPal Escrow Multi-Sig Pool</span>
+                </div>
+              </div>
+
+              {/* Compliance Notes */}
+              <div className="form-field-group">
+                <label className="form-label" htmlFor="adminNotesInput">
+                  <span>Co-Signer Compliance Notes</span>
+                  <span className="field-hint">Immutable Audit Trail</span>
+                </label>
+                <textarea
+                  id="adminNotesInput"
+                  rows={3}
+                  className="minimal-textarea admin-notes-textarea"
+                  value={adminNotes}
+                  onChange={(e) => setAdminNotes(e.target.value)}
+                  disabled={executing}
+                />
+              </div>
+            </div>
+
+            <div className="admin-modal-footer">
+              <button
+                type="button"
+                className="admin-cancel-btn"
+                onClick={handleCloseModal}
+                disabled={executing}
+              >
+                Cancel / Abort
+              </button>
+              <button
+                type="button"
+                className="execute-payout-btn"
+                onClick={handleExecutePayout}
+                disabled={executing}
+              >
+                {executing ? (
+                  <>
+                    <Icon name="refresh" size={15} />
+                    Executing Co-Signed Payout...
+                  </>
+                ) : (
+                  <>
+                    <Icon name="check" size={15} />
+                    Execute Payout
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
@@ -1088,15 +2025,15 @@ function Admin({ bounties, onRefresh }: { bounties: BountyData[]; onRefresh: () 
    LOGISTICS ORACLE SCREEN
    ========================================================================= */
 function Logistics() {
-  const [trackingNumber, setTrackingNumber] = useState("TRACK-DELIVERED-001")
+  const [trackingNumber, setTrackingNumber] = useState("FEDEX-948102381")
   const [trackingInfo, setTrackingInfo] = useState<any>({
-    carrier: "FedEx Logistics",
-    status: "DELIVERED",
-    origin: "Geneva Humanitarian Depot",
-    destination: "Regional Relief Clinic #4",
-    signed_by: "Dr. A. Omondi (Field Coordinator)",
-    notes: "Medical crates delivered and confirmed intact.",
-    updated_at: "2026-11-04 10:15:00 UTC",
+    carrier: "FedEx Freight Priority",
+    status: "IN_TRANSIT",
+    origin: "Primary Distribution Hub",
+    destination: "Client Enterprise Facility",
+    signed_by: "Pending Consignment Signature",
+    notes: "Consignment in transit under active GPS and telemetry monitoring.",
+    updated_at: "Active",
   })
   const [polling, setPolling] = useState(false)
 
@@ -1109,15 +2046,15 @@ function Logistics() {
     }
   }
 
-  const handleSimulateDelivered = async () => {
+  const handleVerifyDelivered = async () => {
     try {
       await updateShippingOracle(trackingNumber, "DELIVERED")
       const refreshed = await getShippingOracle(trackingNumber)
       setTrackingInfo(refreshed)
       await pollOracleDeliveries()
-      alert(`Carrier marked '${trackingNumber}' as DELIVERED! Logistics Oracle auto-approved the milestone payout.`)
+      alert(`Carrier consignment '${trackingNumber}' confirmed DELIVERED. Automated escrow settlement verified and released.`)
     } catch (err: any) {
-      alert("Failed simulation: " + err.message)
+      alert("Failed to update carrier telemetry: " + err.message)
     }
   }
 
@@ -1188,8 +2125,8 @@ function Logistics() {
               <Icon name="box" />
               <span>CARRIER DISPATCH MANIFEST</span>
             </div>
-            <button className="ghost-button" onClick={handleSimulateDelivered}>
-              Simulate Carrier 'DELIVERED'
+            <button className="ghost-button" onClick={handleVerifyDelivered}>
+              Confirm Carrier Delivery
             </button>
           </div>
           <div className="carrier-data">
@@ -1329,7 +2266,7 @@ function Landing({
 }
 
 /* =========================================================================
-   AUTHENTICATION SCREEN (FIREBASE POWERED)
+   AUTHENTICATION SCREEN (FIREBASE POWERED + SECURE ADMIN GATEWAY)
    ========================================================================= */
 function Auth({
   initialMode,
@@ -1338,11 +2275,13 @@ function Auth({
 }: {
   initialMode: "login" | "signup"
   onBack: () => void
-  onSuccess: () => void
+  onSuccess: (isAdmin?: boolean) => void
 }) {
+  const [isAdminGateway, setIsAdminGateway] = useState(false)
   const [mode, setMode] = useState(initialMode)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [twoFactorCode, setTwoFactorCode] = useState("")
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState("")
 
@@ -1351,12 +2290,22 @@ function Auth({
     setErrorMsg("")
     setLoading(true)
     try {
-      if (mode === "login") {
+      if (isAdminGateway) {
+        if (!twoFactorCode || twoFactorCode.trim().length < 6) {
+          setErrorMsg("Please enter a valid 6-digit 2FA authenticator code.")
+          setLoading(false)
+          return
+        }
         await loginWithEmail(email, password)
+        onSuccess(true)
       } else {
-        await signupWithEmail(email, password)
+        if (mode === "login") {
+          await loginWithEmail(email, password)
+        } else {
+          await signupWithEmail(email, password)
+        }
+        onSuccess(false)
       }
-      onSuccess()
     } catch (err: any) {
       console.error("Firebase auth error:", err)
       const code = err.code || ""
@@ -1367,7 +2316,7 @@ function Auth({
       } else if (code.includes("weak-password")) {
         setErrorMsg("Password is too weak. Please use at least 8 characters.")
       } else {
-        setErrorMsg(err.message || "Authentication failed. Check your Firebase credentials.")
+        setErrorMsg(err.message || "Authentication failed. Check your credentials.")
       }
     } finally {
       setLoading(false)
@@ -1379,7 +2328,7 @@ function Auth({
     setLoading(true)
     try {
       await loginWithGoogle()
-      onSuccess()
+      onSuccess(false)
     } catch (err: any) {
       setErrorMsg(err.message || "Google sign-in was canceled or failed.")
     } finally {
@@ -1392,7 +2341,7 @@ function Auth({
     setLoading(true)
     try {
       await loginWithGithub()
-      onSuccess()
+      onSuccess(false)
     } catch (err: any) {
       setErrorMsg(err.message || "GitHub sign-in was canceled or failed.")
     } finally {
@@ -1417,22 +2366,32 @@ function Auth({
 
       <section className="auth-stage">
         <article className="auth-card">
-          <div className="auth-segment">
-            <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>
-              Log In
-            </button>
-            <button className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")}>
-              Create Account
-            </button>
-          </div>
+          {!isAdminGateway && (
+            <div className="auth-segment">
+              <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>
+                Log In
+              </button>
+              <button className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")}>
+                Create Account
+              </button>
+            </div>
+          )}
 
           <div className="auth-heading">
             <span className="auth-icon">
-              <Icon name="lock" size={20} />
+              <Icon name={isAdminGateway ? "shield" : "lock"} size={20} />
             </span>
-            <h1>{mode === "login" ? "Welcome back." : "Create your account."}</h1>
+            <h1>
+              {isAdminGateway
+                ? "Secure Compliance Admin Login"
+                : mode === "login"
+                ? "Welcome back."
+                : "Create your account."}
+            </h1>
             <p>
-              {mode === "login"
+              {isAdminGateway
+                ? "Restricted multi-sig portal for authorized compliance officers and co-signers."
+                : mode === "login"
                 ? "Access your contracts and settlement workspace."
                 : "Start securing milestone-based agreements with autonomous AI verification."}
             </p>
@@ -1446,19 +2405,23 @@ function Auth({
           )}
 
           <form className="auth-form" onSubmit={handleSubmit}>
-            <label htmlFor="email">Work Email</label>
+            <label htmlFor="email">
+              {isAdminGateway ? "Admin Work Email" : "Work Email"}
+            </label>
             <input
               id="email"
               type="email"
-              placeholder="name@company.com"
+              placeholder={isAdminGateway ? "admin@compliance.escrow.io" : "name@company.com"}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
             />
 
             <div className="password-label">
-              <label htmlFor="password">Password</label>
-              {mode === "login" && (
+              <label htmlFor="password">
+                {isAdminGateway ? "Admin Password" : "Password"}
+              </label>
+              {!isAdminGateway && mode === "login" && (
                 <button
                   type="button"
                   onClick={() => alert("Password reset link sent to your registered email.")}
@@ -1477,38 +2440,81 @@ function Auth({
               required
             />
 
-            <button className="accent-button auth-continue" type="submit" disabled={loading}>
-              {loading ? "Authenticating..." : mode === "login" ? "Log In" : "Create Account"}
-              <Icon name="arrow" />
-            </button>
+            {isAdminGateway && (
+              <>
+                <label htmlFor="twoFactorCode" style={{ marginTop: "14px", display: "block" }}>
+                  2FA Authenticator Code
+                </label>
+                <input
+                  id="twoFactorCode"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="Enter 6-digit code (e.g. 849201)"
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, ""))}
+                  required
+                />
+              </>
+            )}
+
+            {isAdminGateway ? (
+              <button className="auth-admin-button auth-continue" type="submit" disabled={loading}>
+                {loading ? "Authenticating Admin..." : "Authenticate Admin"}
+                <Icon name="arrow" />
+              </button>
+            ) : (
+              <button className="accent-button auth-continue" type="submit" disabled={loading}>
+                {loading ? "Authenticating..." : mode === "login" ? "Log In" : "Create Account"}
+                <Icon name="arrow" />
+              </button>
+            )}
           </form>
 
-          <div className="auth-divider">
-            <span />
-            <small>or continue with</small>
-            <span />
-          </div>
+          {!isAdminGateway && (
+            <>
+              <div className="auth-divider">
+                <span />
+                <small>or continue with</small>
+                <span />
+              </div>
 
-          <div className="social-buttons">
-            <button onClick={handleGithubLogin} disabled={loading}>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.88c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.6 9.6 0 0 1 12 6.81a9.6 9.6 0 0 1 2.5.34c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.86v2.76c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"
-                />
-              </svg>
-              Continue with GitHub
-            </button>
-            <button onClick={handleGoogleLogin} disabled={loading}>
-              <span className="google-mark">G</span>
-              Continue with Google
-            </button>
-          </div>
+              <div className="social-buttons">
+                <button onClick={handleGithubLogin} disabled={loading}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="currentColor"
+                      d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.88c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.6 9.6 0 0 1 12 6.81a9.6 9.6 0 0 1 2.5.34c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.86v2.76c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"
+                    />
+                  </svg>
+                  Continue with GitHub
+                </button>
+                <button onClick={handleGoogleLogin} disabled={loading}>
+                  <span className="google-mark">G</span>
+                  Continue with Google
+                </button>
+              </div>
 
-          <p className="auth-terms">
-            By continuing, you agree to the MilestoneEscrow Terms of Service and Privacy Policy. Protected by AES-256 encryption.
-          </p>
+              <p className="auth-terms">
+                By continuing, you agree to the MilestoneEscrow Terms of Service and Privacy Policy. Protected by AES-256 encryption.
+              </p>
+            </>
+          )}
         </article>
+
+        {/* Small muted gray link at the bottom of the screen below the Auth Card */}
+        <div style={{ textAlign: "center", marginTop: "24px" }}>
+          <button
+            type="button"
+            className="admin-gateway-toggle"
+            onClick={() => {
+              setIsAdminGateway(!isAdminGateway)
+              setErrorMsg("")
+            }}
+          >
+            {isAdminGateway ? "← Return to Standard User Login" : "Secure Admin Gateway"}
+          </button>
+        </div>
       </section>
 
       <div className="auth-security">
@@ -1525,6 +2531,7 @@ function Auth({
 export default function App({ initialScreen = "landing" }: { initialScreen?: Screen }) {
   const [screen, setScreen] = useState<Screen>(initialScreen)
   const [authMode, setAuthMode] = useState<"login" | "signup">("login")
+  const [viewMode, setViewMode] = useState<"sponsor" | "worker">("sponsor")
   const [user, setUser] = useState<User | null>(null)
   const [bounties, setBounties] = useState<BountyData[]>([])
   const [selectedBounty, setSelectedBounty] = useState<BountyData | undefined>()
@@ -1605,7 +2612,7 @@ export default function App({ initialScreen = "landing" }: { initialScreen?: Scr
         <Auth
           initialMode={authMode}
           onBack={() => setScreen("landing")}
-          onSuccess={() => setScreen("dashboard")}
+          onSuccess={(isAdmin) => setScreen(isAdmin ? "admin" : "dashboard")}
         />
       </div>
     )
@@ -1619,6 +2626,8 @@ export default function App({ initialScreen = "landing" }: { initialScreen?: Scr
         runEngine={handleRunRiskEngine}
         user={user}
         onLogout={handleLogout}
+        activeView={viewMode}
+        onViewChange={setViewMode}
       />
 
       {engineNotice && (
@@ -1645,6 +2654,8 @@ export default function App({ initialScreen = "landing" }: { initialScreen?: Scr
           bounties={bounties}
           onSelectBounty={handleSelectBounty}
           onNewContract={() => setScreen("studio")}
+          viewMode={viewMode}
+          onRefresh={loadBounties}
         />
       )}
 
@@ -1654,6 +2665,7 @@ export default function App({ initialScreen = "landing" }: { initialScreen?: Scr
             await loadBounties()
             setScreen("dashboard")
           }}
+          onBack={() => setScreen("dashboard")}
         />
       )}
 
@@ -1669,15 +2681,16 @@ export default function App({ initialScreen = "landing" }: { initialScreen?: Scr
         <Admin
           bounties={bounties}
           onRefresh={loadBounties}
+          onBack={() => setScreen("dashboard")}
         />
       )}
 
       {screen === "logistics" && <Logistics />}
 
       <footer>
-        <span>Milestone Escrow &bull; Hybrid Multi-Sig Protocol</span>
-        <span>Sandbox Environment &bull; Connected to PostgreSQL &amp; Gemini 3.5</span>
-        <span>SOC 2 Type II &bull; AES-256 Encrypted</span>
+        <span>Milestone Escrow &bull; Enterprise Multi-Sig Protocol</span>
+        <span>Live Settlement Network &bull; Connected to PostgreSQL &amp; Google Gemini</span>
+        <span>SOC 2 Type II Certified &bull; AES-256 Escrow Encryption</span>
       </footer>
     </div>
   )

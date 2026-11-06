@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PAYPAL_BASE_URL = "https://api-m.sandbox.paypal.com"
+PAYPAL_BASE_URL = os.getenv("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
 
 
 def get_access_token() -> str:
